@@ -9,6 +9,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 # ---------- Конфигурация ----------
 SETTINGS_FILE, MASTERS_FILE, INCOMES_FILE, USERS_FILE = "bot_settings.json", "masters.json", "incomes.json", "users.json"
 DEFAULT_PERCENT = 70.0
+BACK_CALLBACK = "back_to_menu"
 
 # ---------- Клавиатура ----------
 MAIN_KB = ReplyKeyboardMarkup([
@@ -17,6 +18,22 @@ MAIN_KB = ReplyKeyboardMarkup([
     ["📤 Экспорт CSV", "⚙️ Процент удержания"],
     ["❓ Помощь"]
 ], resize_keyboard=True)
+
+def add_back_button(keyboard):
+    """Добавляет кнопку «Назад» в конец инлайн-клавиатуры."""
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=BACK_CALLBACK)])
+    return keyboard
+
+def build_period_keyboard(prefix):
+    keyboard = [
+        [InlineKeyboardButton("📅 Сегодня", callback_data=f"{prefix}_сегодня"),
+         InlineKeyboardButton("📅 Неделя", callback_data=f"{prefix}_неделя")],
+        [InlineKeyboardButton("📅 Месяц", callback_data=f"{prefix}_месяц"),
+         InlineKeyboardButton("📅 Год", callback_data=f"{prefix}_год")],
+        [InlineKeyboardButton("📅 Вся история", callback_data=f"{prefix}_все")],
+        [InlineKeyboardButton("📅 Произвольный диапазон", callback_data=f"{prefix}_custom")]
+    ]
+    return InlineKeyboardMarkup(add_back_button(keyboard))
 
 # ---------- Менеджер данных ----------
 class DataManager:
@@ -69,16 +86,6 @@ def filter_incomes(incomes_list, master_name=None, period=None):
                                (not end_date or datetime.fromisoformat(inc["date"]) <= end_date)))]
 
 # ---------- Вспомогательные функции ----------
-def build_period_keyboard(callback_prefix):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📅 Сегодня", callback_data=f"{callback_prefix}_сегодня"),
-         InlineKeyboardButton("📅 Неделя", callback_data=f"{callback_prefix}_неделя")],
-        [InlineKeyboardButton("📅 Месяц", callback_data=f"{callback_prefix}_месяц"),
-         InlineKeyboardButton("📅 Год", callback_data=f"{callback_prefix}_год")],
-        [InlineKeyboardButton("📅 Вся история", callback_data=f"{callback_prefix}_все")],
-        [InlineKeyboardButton("📅 Произвольный диапазон", callback_data=f"{callback_prefix}_custom")]
-    ])
-
 def parse_period_arg(arg):
     if arg in ("день","сегодня","неделя","месяц","год"): return arg
     parts = arg.split()
@@ -105,7 +112,7 @@ class SalaryBot:
                              ("stats", self.stats), ("rating", self.rating),
                              ("register", self.register), ("unregister", self.unregister)]:
             self.app.add_handler(CommandHandler(cmd, handler))
-        self.app.add_handler(CallbackQueryHandler(self.callback_handler, pattern="^(percent|master_|skip_master|stats_master_|stats_period_|rating_period_)"))
+        self.app.add_handler(CallbackQueryHandler(self.callback_handler, pattern="^(percent|master_|skip_master|stats_master_|stats_period_|rating_period_|edit_master_|back_to_menu)"))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
     # ---------- Команды ----------
@@ -113,7 +120,7 @@ class SalaryBot:
         await update.message.reply_text("👋 Я считаю зарплату по списку работ.\nОтправь текст с числами, я найду их и посчитаю.", reply_markup=MAIN_KB)
     async def help(self, update, ctx):
         await update.message.reply_text(
-            "📖 Справка:\n➕ Добавить мастера\n📋 Список мастеров\n📊 Статистика\n🏆 Рейтинг\n📤 Экспорт CSV\n⚙️ Процент удержания\n❓ Помощь\n/register <имя> – привязать себя\n/unregister – отвязать", reply_markup=MAIN_KB)
+            "📖 Справка:\n➕ Добавить мастера\n📋 Список мастеров (редактор)\n📊 Статистика\n🏆 Рейтинг\n📤 Экспорт CSV\n⚙️ Процент удержания\n❓ Помощь\n/register <имя> – привязать себя\n/unregister – отвязать", reply_markup=MAIN_KB)
 
     # ---------- Регистрация ----------
     async def register(self, update, ctx):
@@ -144,9 +151,22 @@ class SalaryBot:
         if not name: return await update.message.reply_text("Укажите имя: /remove_master Иван")
         if name not in self.data.masters: return await update.message.reply_text(f"Мастер {name} не найден.")
         self.data.masters.remove(name); self.data.save_masters(); await update.message.reply_text(f"✅ Мастер {name} удалён.")
+
     async def list_masters(self, update, ctx):
-        if not self.data.masters: return await update.message.reply_text("Список мастеров пуст.")
-        await update.message.reply_text("📋 Мастера:\n" + "\n".join(f"• {m}" for m in self.data.masters))
+        """Редактор мастеров с инлайн-кнопками."""
+        if not self.data.masters:
+            await update.message.reply_text("Список мастеров пуст. Добавьте через «➕ Добавить мастера».")
+            return
+        keyboard = []
+        for m in self.data.masters:
+            keyboard.append([
+                InlineKeyboardButton(m, callback_data="noop"),
+                InlineKeyboardButton("✏️", callback_data=f"edit_master_rename_{m}"),
+                InlineKeyboardButton("❌", callback_data=f"edit_master_delete_{m}")
+            ])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=BACK_CALLBACK)])
+        await update.message.reply_text("📋 Список мастеров:\n(нажмите ✏️ для переименования, ❌ для удаления)",
+                                        reply_markup=InlineKeyboardMarkup(keyboard))
 
     # ---------- Доходы ----------
     async def list_incomes(self, update, ctx):
@@ -170,19 +190,22 @@ class SalaryBot:
     async def export_csv(self, update, ctx):
         if not self.data.incomes: return await update.message.reply_text("Нет данных.")
         output = io.StringIO()
-        csv.writer(output, delimiter=';').writerow(["Мастер","Сумма","Дата","Исходный текст"])
+        writer = csv.writer(output, delimiter=';')
+        writer.writerow(["Мастер","Сумма","Дата","Исходный текст"])
         for inc in self.data.incomes:
-            csv.writer(output, delimiter=';').writerow([inc["master"], inc["amount"], inc["date"], inc.get("text","")])
+            writer.writerow([inc["master"], inc["amount"], inc["date"], inc.get("text","")])
         output.seek(0)
         await update.message.reply_document(document=output.getvalue().encode('utf-8-sig'), filename="incomes.csv", caption="📊 Экспорт доходов")
 
     # ---------- Процент ----------
     async def set_percent(self, update, ctx):
-        await update.message.reply_text("Выберите процент:", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("70%", callback_data="percent_70"), InlineKeyboardButton("60%", callback_data="percent_60")],
-            [InlineKeyboardButton("50%", callback_data="percent_50"), InlineKeyboardButton("40%", callback_data="percent_40")],
-            [InlineKeyboardButton("Своё...", callback_data="percent_custom")]
-        ]))
+        await update.message.reply_text("Выберите процент:", reply_markup=InlineKeyboardMarkup(
+            add_back_button([
+                [InlineKeyboardButton("70%", callback_data="percent_70"), InlineKeyboardButton("60%", callback_data="percent_60")],
+                [InlineKeyboardButton("50%", callback_data="percent_50"), InlineKeyboardButton("40%", callback_data="percent_40")],
+                [InlineKeyboardButton("Своё...", callback_data="percent_custom")]
+            ])
+        ))
     async def _handle_percent_input(self, update, ctx):
         try:
             new_percent = float(update.message.text.strip())
@@ -204,10 +227,9 @@ class SalaryBot:
                 return await self._show_stats_or_rating(update, ctx, "stats", master=name, period=period)
             else:
                 return await self._show_stats_or_rating(update, ctx, "stats", master=None, period=name)
-        # Показать выбор мастера
         keyboard = [[InlineKeyboardButton("📊 Все мастера", callback_data="stats_master_все")]]
         for m in self.data.masters: keyboard.append([InlineKeyboardButton(m, callback_data=f"stats_master_{m}")])
-        await update.message.reply_text("Выберите мастера:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text("Выберите мастера:", reply_markup=InlineKeyboardMarkup(add_back_button(keyboard)))
 
     # ---------- Рейтинг ----------
     async def rating(self, update, ctx):
@@ -228,7 +250,7 @@ class SalaryBot:
         filtered = filter_incomes(self.data.incomes, master_name=master if master!="все" else None, period=period_spec)
         if not filtered:
             msg = "Нет данных за выбранный период."
-            if reply_target: return await reply_target.edit_text(msg)
+            if reply_target: return await reply_target.edit_text(msg, reply_markup=InlineKeyboardMarkup(add_back_button([])))
             return await update.message.reply_text(msg)
 
         period_display = {"сегодня":"Сегодня","неделя":"Неделя","месяц":"Месяц","год":"Год","все":"Всю историю"}.get(period if isinstance(period,str) else "все", str(period)) if period else "весь период"
@@ -257,14 +279,21 @@ class SalaryBot:
                 lines.append(f"{medal} {m} – {amt:.2f} руб.")
             text = "\n".join(lines)
 
-        if reply_target: await reply_target.edit_text(text, parse_mode="Markdown")
-        else: await update.message.reply_text(text, parse_mode="Markdown")
+        if reply_target:
+            await reply_target.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(add_back_button([])))
+        else:
+            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(add_back_button([])))
 
     # ---------- Callback-обработчик ----------
     async def callback_handler(self, update, ctx):
         query = update.callback_query
         await query.answer()
         data = query.data
+
+        # Кнопка "Назад" — возврат в главное меню
+        if data == BACK_CALLBACK:
+            await query.edit_message_text("Главное меню:", reply_markup=MAIN_KB)
+            return
 
         # Процент
         if data.startswith("percent_"):
@@ -278,6 +307,26 @@ class SalaryBot:
                 self.data.settings["deduction_percent"] = p
                 self.data.save_settings()
                 await query.edit_message_text(f"✅ Удержание установлено на {p:.1f}%")
+            return
+
+        # Редактор мастеров: удаление
+        if data.startswith("edit_master_delete_"):
+            name = data.replace("edit_master_delete_", "")
+            if name in self.data.masters:
+                self.data.masters.remove(name)
+                self.data.save_masters()
+                # Обновляем список
+                await self._refresh_master_list(query)
+            else:
+                await query.edit_message_text(f"Мастер {name} уже удалён.")
+            return
+
+        # Редактор мастеров: переименование
+        if data.startswith("edit_master_rename_"):
+            name = data.replace("edit_master_rename_", "")
+            ctx.user_data["rename_old_name"] = name
+            await query.edit_message_text(f"Введите новое имя для мастера «{name}»:")
+            ctx.user_data["waiting_for_rename"] = True
             return
 
         # Выбор мастера для статистики
@@ -324,6 +373,22 @@ class SalaryBot:
             self.data.save_incomes()
             await query.edit_message_text(f"✅ Доход {result['net_salary']:.2f} руб. записан для мастера {master_name}.")
 
+    async def _refresh_master_list(self, query):
+        """Обновляет сообщение со списком мастеров после изменений."""
+        if not self.data.masters:
+            await query.edit_message_text("Список мастеров пуст. Добавьте через «➕ Добавить мастера».")
+            return
+        keyboard = []
+        for m in self.data.masters:
+            keyboard.append([
+                InlineKeyboardButton(m, callback_data="noop"),
+                InlineKeyboardButton("✏️", callback_data=f"edit_master_rename_{m}"),
+                InlineKeyboardButton("❌", callback_data=f"edit_master_delete_{m}")
+            ])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=BACK_CALLBACK)])
+        await query.edit_message_text("📋 Список мастеров:\n(нажмите ✏️ для переименования, ❌ для удаления)",
+                                      reply_markup=InlineKeyboardMarkup(keyboard))
+
     # ---------- Обработчик сообщений ----------
     async def handle_message(self, update, ctx):
         user_id = update.effective_user.id
@@ -344,7 +409,7 @@ class SalaryBot:
             await btn_map[text](update, ctx)
             return
 
-        # Ожидание ввода имени мастера
+        # Ожидание имени мастера (добавление)
         if ctx.user_data.get("waiting_for_master_name"):
             name = text.strip()
             if name in self.data.masters:
@@ -353,6 +418,34 @@ class SalaryBot:
                 self.data.masters.append(name); self.data.save_masters()
                 await update.message.reply_text(f"✅ Мастер {name} добавлен.")
             ctx.user_data["waiting_for_master_name"] = False
+            return
+
+        # Ожидание нового имени для переименования
+        if ctx.user_data.get("waiting_for_rename"):
+            old_name = ctx.user_data.get("rename_old_name")
+            new_name = text.strip()
+            if not new_name:
+                await update.message.reply_text("Имя не может быть пустым.")
+                return
+            if new_name in self.data.masters and new_name != old_name:
+                await update.message.reply_text(f"Мастер {new_name} уже существует.")
+                return
+            # Переименовываем в списке мастеров
+            idx = self.data.masters.index(old_name)
+            self.data.masters[idx] = new_name
+            # Обновляем также доходы и регистрации пользователей
+            for inc in self.data.incomes:
+                if inc["master"] == old_name:
+                    inc["master"] = new_name
+            for uid, m in self.data.users.items():
+                if m == old_name:
+                    self.data.users[uid] = new_name
+            self.data.save_masters(); self.data.save_incomes(); self.data.save_users()
+            ctx.user_data["waiting_for_rename"] = False
+            ctx.user_data["rename_old_name"] = None
+            await update.message.reply_text(f"✅ Мастер переименован: {old_name} → {new_name}")
+            # Покажем обновлённый список
+            await self.list_masters(update, ctx)
             return
 
         # Ожидание процента
@@ -409,7 +502,7 @@ class SalaryBot:
             await update.message.reply_text(
                 f"📊 Начислено: {result['accrued']:.2f} руб.\nУдержание {result['percent']:.1f}%: {result['deductions']:.2f} руб.\n"
                 f"💵 К выдаче: {result['net_salary']:.2f} руб.\n\nВы не зарегистрированы. Хотите записать доход для мастера?",
-                reply_markup=InlineKeyboardMarkup(keyboard))
+                reply_markup=InlineKeyboardMarkup(add_back_button(keyboard)))
 
     # ---------- Запуск ----------
     def run(self):
