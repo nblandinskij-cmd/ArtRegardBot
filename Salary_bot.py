@@ -32,7 +32,7 @@ def period_kb(p):
          InlineKeyboardButton("📅 Произвольный диапазон", callback_data=f"{p}_custom")]
     ]))
 
-# ---------- Данные ----------
+# ---------- Менеджер данных с защитой ----------
 class DataManager:
     def __init__(self):
         self.settings = self._load(F[0], {"deduction_percent": DEFAULT_PERCENT})
@@ -44,12 +44,46 @@ class DataManager:
         if os.path.exists(file):
             try:
                 with open(file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    # Проверка типа данных
+                    if file == F[1] and not isinstance(data, list):
+                        return default
+                    if file == F[2] and not isinstance(data, list):
+                        return default
+                    if file == F[3] and not isinstance(data, dict):
+                        return default
+                    if file == F[0] and not isinstance(data, dict):
+                        return default
+                    return data
             except:
                 return default
         return default
 
     def _save(self, file, data):
+        # Очистка данных перед сохранением
+        if file == F[1] and isinstance(data, list):  # masters
+            data = [str(x) for x in data if x is not None and str(x).strip()]
+        elif file == F[0] and isinstance(data, dict):  # settings
+            if "deduction_percent" in data:
+                try:
+                    data["deduction_percent"] = float(data["deduction_percent"])
+                except:
+                    data["deduction_percent"] = DEFAULT_PERCENT
+        elif file == F[3] and isinstance(data, dict):  # users
+            for uid, name in list(data.items()):
+                if name is None or not str(name).strip():
+                    del data[uid]
+                else:
+                    data[uid] = str(name).strip()
+        elif file == F[2] and isinstance(data, list):  # incomes
+            for inc in data:
+                if "master" in inc:
+                    inc["master"] = str(inc["master"]) if inc["master"] else ""
+                if "amount" in inc:
+                    try:
+                        inc["amount"] = float(inc["amount"])
+                    except:
+                        inc["amount"] = 0.0
         with open(file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -59,12 +93,29 @@ class DataManager:
         self._save(F[2], self.incomes)
         self._save(F[3], self.users)
 
-# ---------- Парсинг чисел ----------
+# ---------- Парсинг чисел (улучшенный) ----------
 def parse_numbers(text):
     if not text:
         return 0.0
+    # Убираем пробелы между цифрами
     cleaned = re.sub(r'(?<=\d)\s+(?=\d)', '', text)
-    cleaned = re.sub(r'(?<=\d),(?=\d)', '.', cleaned)
+    # Заменяем запятую на точку, если она десятичный разделитель (1-2 цифры после)
+    # Игнорируем запятые, после которых ровно 3 цифры (разделитель тысяч)
+    def replace_comma(match):
+        # match.group(0) - запятая, перед ней цифра, после неё цифры
+        # Определяем длину числа после запятой до следующего нецифрового символа
+        start = match.start()
+        end = match.end()
+        # Ищем, сколько цифр после запятой
+        after = re.search(r'\d+', cleaned[end:])
+        if after:
+            digits_after = after.group()
+            if len(digits_after) <= 2:
+                return '.'
+        return ','
+    # Ищем запятые между цифрами
+    cleaned = re.sub(r'(?<=\d),(?=\d)', replace_comma, cleaned)
+    # Теперь ищем все числа (целые и десятичные)
     return sum(float(n) for n in re.findall(r'-?\d+(?:\.\d+)?', cleaned) if n)
 
 def get_message_text(update):
@@ -79,7 +130,7 @@ def get_message_text(update):
         return msg.document.file_name
     return ""
 
-# ---------- Расчёт (с защитой от ошибок типа) ----------
+# ---------- Расчёт ----------
 def calculate(accrued, percent):
     try:
         percent = float(percent)
@@ -140,12 +191,10 @@ def parse_period(arg):
 class SalaryBot:
     def __init__(self, token):
         self.data = DataManager()
-        # Приводим процент к float, если ошибка — ставим по умолчанию
         try:
             self.percent = float(self.data.settings.get("deduction_percent", DEFAULT_PERCENT))
-        except (ValueError, TypeError):
+        except:
             self.percent = DEFAULT_PERCENT
-
         self.app = Application.builder().token(token).build()
         self._register_handlers()
 
@@ -182,7 +231,6 @@ class SalaryBot:
     async def unknown_command(self, update, context):
         await update.message.reply_text("❌ Неизвестная команда. Используйте /help.", reply_markup=KB)
 
-    # ---------- Команды ----------
     async def start(self, update, context):
         await update.message.reply_text("👋 Я считаю зарплату по списку работ.\nОтправь текст с числами.", reply_markup=KB)
 
@@ -201,11 +249,13 @@ class SalaryBot:
             reply_markup=KB
         )
 
-    # ---------- Регистрация пользователей ----------
+    # ---------- Регистрация ----------
     async def register_user(self, update, context):
         if not context.args:
             return await update.message.reply_text("Укажите имя: /register Иван")
         name = " ".join(context.args).strip()
+        if not name:
+            return await update.message.reply_text("Имя не может быть пустым.")
         if name not in self.data.masters:
             return await update.message.reply_text(f"Мастер '{name}' не существует.")
         if any(m == name and int(uid) != update.effective_user.id for uid, m in self.data.users.items()):
@@ -223,10 +273,12 @@ class SalaryBot:
         else:
             await update.message.reply_text("Вы не зарегистрированы.")
 
-    # ---------- Управление мастерами ----------
+    # ---------- Мастера ----------
     async def add_master(self, update, context):
         if context.args:
             name = " ".join(context.args).strip()
+            if not name:
+                return await update.message.reply_text("Имя не может быть пустым.")
             if name in self.data.masters:
                 return await update.message.reply_text(f"Мастер {name} уже есть.")
             self.data.masters.append(name)
@@ -301,7 +353,7 @@ class SalaryBot:
             caption="📊 Экспорт доходов"
         )
 
-    # ---------- Процент удержания ----------
+    # ---------- Процент ----------
     async def set_percent(self, update, context):
         keyboard = add_back([
             [InlineKeyboardButton("70%", callback_data="percent_70"),
@@ -342,7 +394,7 @@ class SalaryBot:
         else:
             await update.message.reply_text("Введите текст с числами: /calc Лексус 1300")
 
-    # ---------- Статистика ----------
+    # ---------- Статистика и рейтинг ----------
     async def stats(self, update, context):
         if context.args:
             name = context.args[0]
@@ -356,7 +408,6 @@ class SalaryBot:
             keyboard.append([InlineKeyboardButton(m, callback_data=f"stats_master_{m}")])
         await update.message.reply_text("Выберите мастера:", reply_markup=InlineKeyboardMarkup(add_back(keyboard)))
 
-    # ---------- Рейтинг ----------
     async def rating(self, update, context):
         if context.args:
             period = parse_period(" ".join(context.args))
@@ -426,7 +477,7 @@ class SalaryBot:
         else:
             await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(add_back([])))
 
-    # ---------- Callback-обработчик ----------
+    # ---------- Callback ----------
     async def callback(self, update, context):
         query = update.callback_query
         data = query.data
@@ -435,6 +486,8 @@ class SalaryBot:
             await query.answer()
 
             if data == BACK:
+                # Сброс всех состояний
+                context.user_data.clear()
                 await query.message.delete()
                 await query.message.reply_text("Главное меню:", reply_markup=KB)
                 return
@@ -442,7 +495,6 @@ class SalaryBot:
             if data == "noop":
                 return
 
-            # Процент
             if data.startswith("percent_"):
                 val = data.split("_")[1]
                 if val == "custom":
@@ -456,7 +508,6 @@ class SalaryBot:
                     await query.edit_message_text(f"✅ Удержание установлено на {p:.1f}%")
                 return
 
-            # Редактирование мастеров
             if data.startswith("edit_master_delete_"):
                 name = data.replace("edit_master_delete_", "")
                 if name in self.data.masters:
@@ -474,7 +525,6 @@ class SalaryBot:
                 context.user_data["wait_rename"] = True
                 return
 
-            # Статистика: выбор мастера
             if data.startswith("stats_master_"):
                 master = data.replace("stats_master_", "")
                 context.user_data["stats_master"] = master
@@ -484,7 +534,6 @@ class SalaryBot:
                 )
                 return
 
-            # Статистика: выбор периода
             if data.startswith("stats_period_"):
                 period = data.replace("stats_period_", "")
                 if period == "custom":
@@ -495,7 +544,6 @@ class SalaryBot:
                 await self._show_stats_or_rating(update, context, "stats", master=master, period=period, target=query.message)
                 return
 
-            # Рейтинг: выбор периода
             if data.startswith("rating_period_"):
                 period = data.replace("rating_period_", "")
                 if period == "custom":
@@ -505,7 +553,6 @@ class SalaryBot:
                 await self._show_stats_or_rating(update, context, "rating", period=period, target=query.message)
                 return
 
-            # Запись дохода (выбор мастера)
             if data.startswith("master_") or data == "skip_master":
                 if data == "skip_master":
                     await query.edit_message_text("Доход не записан.")
@@ -548,25 +595,19 @@ class SalaryBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=BACK)])
         await query.edit_message_text("📋 Список мастеров:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # ---------- Обработка текстовых сообщений ----------
+    # ---------- Основной обработчик сообщений ----------
     async def handle_message(self, update, context):
         try:
-            # Принудительный отладочный ответ
-            await update.message.reply_text("⏳ Обрабатываю ваше сообщение...")
-
             if not update or not update.message:
-                await update.message.reply_text("Ошибка: нет сообщения.")
                 return
 
             uid = update.effective_user.id
             text = get_message_text(update)
             if not text:
-                await update.message.reply_text("Я не вижу текста. Напишите что-нибудь.")
+                await update.message.reply_text("Я не вижу текста.")
                 return
 
-            await update.message.reply_text(f"📝 Получен текст: {text[:100]}...")
-
-            # Обработка кнопок (текстовых)
+            # Обработка кнопок
             button_map = {
                 "➕ Добавить мастера": self.add_master,
                 "📋 Список мастеров": self.list_masters,
@@ -581,15 +622,13 @@ class SalaryBot:
                 await button_map[text](update, context)
                 return
 
-            # Ожидание ввода (состояния)
+            # Ожидания
             if context.user_data.get("wait_calc_only"):
                 acc = parse_numbers(text)
                 if acc == 0:
                     await update.message.reply_text("❌ Не найдено чисел.")
                 else:
-                    # Приводим процент к float перед расчётом
-                    percent = float(self.percent) if self.percent else DEFAULT_PERCENT
-                    result = calculate(acc, percent)
+                    result = calculate(acc, self.percent)
                     await update.message.reply_text(
                         f"📊 Начислено: {result['accrued']:.2f} руб.\n"
                         f"Удержание {result['percent']:.1f}%: {result['deductions']:.2f} руб.\n"
@@ -600,6 +639,9 @@ class SalaryBot:
 
             if context.user_data.get("wait_master"):
                 name = text.strip()
+                if not name:
+                    await update.message.reply_text("Имя не может быть пустым.")
+                    return
                 if name in self.data.masters:
                     await update.message.reply_text(f"Мастер {name} уже есть.")
                 else:
@@ -613,9 +655,14 @@ class SalaryBot:
                 old = context.user_data.get("rename_old")
                 new = text.strip()
                 if not new:
-                    return await update.message.reply_text("Имя не может быть пустым.")
+                    await update.message.reply_text("Имя не может быть пустым.")
+                    return
                 if new in self.data.masters and new != old:
-                    return await update.message.reply_text(f"Мастер {new} уже существует.")
+                    await update.message.reply_text(f"Мастер {new} уже существует.")
+                    # Сбрасываем состояние, чтобы пользователь мог выйти
+                    context.user_data.pop("wait_rename", None)
+                    context.user_data.pop("rename_old", None)
+                    return
                 idx = self.data.masters.index(old)
                 self.data.masters[idx] = new
                 for inc in self.data.incomes:
@@ -625,8 +672,8 @@ class SalaryBot:
                     if m == old:
                         self.data.users[uid2] = new
                 self.data.save_all()
-                context.user_data["wait_rename"] = False
-                context.user_data["rename_old"] = None
+                context.user_data.pop("wait_rename", None)
+                context.user_data.pop("rename_old", None)
                 await update.message.reply_text(f"✅ Переименован: {old} → {new}")
                 await self.list_masters(update, context)
                 return
@@ -657,22 +704,13 @@ class SalaryBot:
                     await update.message.reply_text("Введите две даты через пробел.")
                 return
 
-            # ----- ОСНОВНОЙ РАСЧЁТ (с автоматической записью) -----
+            # Основной расчёт
             acc = parse_numbers(text)
-            await update.message.reply_text(f"🔢 Найдено чисел на сумму: {acc:.2f}")
             if acc == 0:
                 await update.message.reply_text("❌ Не найдено чисел. Пример: 'Лексус 1300'")
                 return
 
-            # Приводим процент к float
-            percent = float(self.percent) if self.percent else DEFAULT_PERCENT
-            result = calculate(acc, percent)
-            await update.message.reply_text(
-                f"🧮 Рассчитано: начислено {result['accrued']:.2f}, "
-                f"удержание {result['deductions']:.2f}, "
-                f"к выдаче {result['net']:.2f}"
-            )
-
+            result = calculate(acc, self.percent)
             master = self.data.users.get(str(uid))
             if master:
                 self.data.incomes.append({
@@ -682,7 +720,11 @@ class SalaryBot:
                     "text": text
                 })
                 self.data.save_all()
-                await update.message.reply_text(f"✅ Доход {result['net']:.2f} руб. записан на мастера {master}.")
+                await update.message.reply_text(
+                    f"📊 Начислено: {result['accrued']:.2f} руб.\n"
+                    f"Удержание {result['percent']:.1f}%: {result['deductions']:.2f} руб.\n"
+                    f"💵 К выдаче: {result['net']:.2f} руб.\n\n✅ Доход записан на мастера {master}."
+                )
             else:
                 context.user_data["last_result"] = result
                 context.user_data["last_text"] = text
@@ -698,13 +740,16 @@ class SalaryBot:
                         keyboard.append(row)
                 keyboard.append([InlineKeyboardButton("❌ Не записывать", callback_data="skip_master")])
                 await update.message.reply_text(
+                    f"📊 Начислено: {result['accrued']:.2f} руб.\n"
+                    f"Удержание {result['percent']:.1f}%: {result['deductions']:.2f} руб.\n"
+                    f"💵 К выдаче: {result['net']:.2f} руб.\n\n"
                     "Вы не зарегистрированы. Выберите мастера для записи дохода:",
                     reply_markup=InlineKeyboardMarkup(add_back(keyboard))
                 )
 
         except Exception as e:
             logger.error(f"Критическая ошибка в handle_message: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+            await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
     async def simple_calc(self, update, context):
         await update.message.reply_text("Введите список работ с числами для расчёта (без сохранения):")
@@ -715,8 +760,6 @@ class SalaryBot:
         logger.info("Бот запущен")
         self.app.run_polling()
 
-
-# ---------- Точка входа ----------
 if __name__ == "__main__":
     token = os.environ.get("BOT_TOKEN")
     if not token:
