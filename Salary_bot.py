@@ -46,9 +46,13 @@ def get_message_text(update):
     if msg.document and msg.document.file_name: return msg.document.file_name
     return ""
 
-def calc(acc,perc):
-    ded=acc*(perc/100)
-    return {"accrued":acc,"deductions":ded,"net":acc-ded,"percent":perc}
+def calc(acc, perc):
+    try:
+        perc = float(perc)
+    except (ValueError, TypeError):
+        perc = 70.0
+    ded = acc * (perc / 100.0)
+    return {"accrued": acc, "deductions": ded, "net": acc - ded, "percent": perc}
 
 def filtr(incomes,name=None,period=None):
     now=datetime.now(); st=et=None
@@ -318,12 +322,9 @@ class Bot:
         kb.append([InlineKeyboardButton("🔙 Назад",callback_data=BACK)])
         await q.edit_message_text("📋 Список мастеров:",reply_markup=InlineKeyboardMarkup(kb))
 
-    # ---------- ОСНОВНОЙ ОБРАБОТЧИК С ПОШАГОВОЙ ОТЛАДКОЙ ----------
     async def msg(s,u,c):
         try:
-            # Шаг 1: уведомление
             await u.message.reply_text("⏳ Обрабатываю ваше сообщение...")
-            
             if not u or not u.message:
                 await u.message.reply_text("Ошибка: нет сообщения.")
                 return
@@ -334,7 +335,6 @@ class Bot:
                 return
             await u.message.reply_text(f"📝 Получен текст: {text[:100]}...")
 
-            # Обработка кнопок
             btn_map={
                 "➕ Добавить мастера":s.add,
                 "📋 Список мастеров":s.list_m,
@@ -349,7 +349,6 @@ class Bot:
                 await btn_map[text](u,c)
                 return
 
-            # Обработка состояний (ожидания)
             if c.user_data.get("wait_calc_only"):
                 acc=parse(text)
                 if acc==0:
@@ -407,7 +406,6 @@ class Bot:
                     await u.message.reply_text("Введите две даты через пробел.")
                 return
 
-            # ----- ОСНОВНОЙ РАСЧЁТ -----
             acc=parse(text)
             await u.message.reply_text(f"🔢 Найдено чисел на сумму: {acc:.2f}")
             if acc==0:
@@ -417,17 +415,13 @@ class Bot:
             res=calc(acc,s.p)
             await u.message.reply_text(f"🧮 Рассчитано: начислено {res['accrued']:.2f}, удержание {res['deductions']:.2f}, к выдаче {res['net']:.2f}")
 
-            # Проверка регистрации
             master=s.d.u.get(str(uid))
             if master:
-                # сохранение
                 s.d.i.append({"master":master,"amount":res["net"],"date":datetime.now().isoformat(),"text":text})
                 s.d.save_all()
                 await u.message.reply_text(f"✅ Доход {res['net']:.2f} руб. записан на мастера {master}.")
             else:
-                # предложение выбрать мастера
-                c.user_data["last_result"]=res
-                c.user_data["last_text"]=text
+                c.user_data["last_result"]=res; c.user_data["last_text"]=text
                 kb=[]
                 if s.d.m:
                     row=[]
