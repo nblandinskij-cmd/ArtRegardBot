@@ -1,7 +1,11 @@
-import re,json,os,csv,io
+import re,json,os,csv,io,logging
 from datetime import datetime,timedelta
 from telegram import Update,InlineKeyboardButton,InlineKeyboardMarkup,ReplyKeyboardMarkup
 from telegram.ext import Application,CommandHandler,MessageHandler,CallbackQueryHandler,filters,ContextTypes
+
+# Включаем логирование для отладки
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # ---------- Конфигурация ----------
 F=("bot_settings.json","masters.json","incomes.json","users.json")
@@ -77,7 +81,8 @@ class Bot:
                       ("stats",s.stats),("rating",s.rating),("register",s.reg),("unregister",s.unreg),
                       ("calc",s.calc_cmd)]:
             s.app.add_handler(CommandHandler(cmd,h))
-        s.app.add_handler(CallbackQueryHandler(s.cb,pattern="^(percent|master_|skip_master|stats_master_|stats_period_|rating_period_|edit_master_|back_to_menu)"))
+        # Расширенный паттерн для всех callback'ов
+        s.app.add_handler(CallbackQueryHandler(s.cb, pattern="^(percent|master_|skip_master|stats_master_|stats_period_|rating_period_|edit_master_|back_to_menu|noop)"))
         s.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, s.msg))
 
     # ---------- Команды ----------
@@ -155,7 +160,7 @@ class Bot:
         except: await u.message.reply_text("❌ Введите число.")
         c.user_data["wait_percent"]=False
 
-    # ---------- Команда /calc (простой расчёт без сохранения) ----------
+    # ---------- Команда /calc ----------
     async def calc_cmd(s,u,c):
         if c.args:
             text=" ".join(c.args)
@@ -222,64 +227,86 @@ class Bot:
 
     # ---------- Callback ----------
     async def cb(s,u,c):
-        q=u.callback_query; await q.answer(); data=q.data
-        if data==BACK:
-            await q.message.delete()
-            await q.message.reply_text("Главное меню:",reply_markup=KB)
-            return
-        if data.startswith("percent_"):
-            val=data.split("_")[1]
-            if val=="custom":
-                await q.edit_message_text("Введите число от 0 до 100:")
-                c.user_data["wait_percent"]=True
-            else:
-                p=float(val); s.p=p; s.d.s["deduction_percent"]=p; s.d.save_all()
-                await q.edit_message_text(f"✅ Удержание {p:.1f}%")
-            return
-        if data.startswith("edit_master_delete_"):
-            name=data.replace("edit_master_delete_","")
-            if name in s.d.m: s.d.m.remove(name); s.d.save_all(); await s._refresh_master(q)
-            else: await q.edit_message_text(f"Мастер {name} уже удалён.")
-            return
-        if data.startswith("edit_master_rename_"):
-            name=data.replace("edit_master_rename_","")
-            c.user_data["rename_old"]=name
-            await q.edit_message_text(f"Введите новое имя для «{name}»:")
-            c.user_data["wait_rename"]=True
-            return
-        if data.startswith("stats_master_"):
-            master=data.replace("stats_master_","")
-            c.user_data["stats_master"]=master
-            await q.edit_message_text(f"Мастер: {master if master!='все' else 'Все'}\nВыберите период:",reply_markup=period_kb("stats_period"))
-            return
-        if data.startswith("stats_period_"):
-            period=data.replace("stats_period_","")
-            if period=="custom":
-                await q.edit_message_text("Введите даты ГГГГ-ММ-ДД ГГГГ-ММ-ДД:")
-                c.user_data["wait_custom_dates"]=True
+        q=u.callback_query
+        data=q.data
+        logger.info(f"Получен callback: {data} от пользователя {u.effective_user.id}")
+        try:
+            await q.answer()
+            if data==BACK:
+                await q.message.delete()
+                await q.message.reply_text("Главное меню:",reply_markup=KB)
                 return
-            master=c.user_data.get("stats_master","все")
-            await s._show(u,c,"stats",master=master,period=period,target=q.message)
-            return
-        if data.startswith("rating_period_"):
-            period=data.replace("rating_period_","")
-            if period=="custom":
-                await q.edit_message_text("Введите даты ГГГГ-ММ-ДД ГГГГ-ММ-ДД:")
-                c.user_data["wait_rating_dates"]=True
+            if data=="noop":
+                # Игнорируем нажатие на имя мастера в списке
                 return
-            await s._show(u,c,"rating",period=period,target=q.message)
-            return
-        if data.startswith("master_") or data=="skip_master":
-            if data=="skip_master": return await q.edit_message_text("Доход не записан.")
-            master=data[7:]
-            res=c.user_data.get("last_result"); txt=c.user_data.get("last_text","")
-            if not res: return await q.edit_message_text("❌ Ошибка.")
-            s.d.i.append({"master":master,"amount":res["net"],"date":datetime.now().isoformat(),"text":txt})
-            s.d.save_all()
-            await q.edit_message_text(f"✅ Доход {res['net']:.2f} руб. для {master} записан.")
+            if data.startswith("percent_"):
+                val=data.split("_")[1]
+                if val=="custom":
+                    await q.edit_message_text("Введите число от 0 до 100:")
+                    c.user_data["wait_percent"]=True
+                else:
+                    p=float(val); s.p=p; s.d.s["deduction_percent"]=p; s.d.save_all()
+                    await q.edit_message_text(f"✅ Удержание {p:.1f}%")
+                return
+            if data.startswith("edit_master_delete_"):
+                name=data.replace("edit_master_delete_","")
+                if name in s.d.m:
+                    s.d.m.remove(name); s.d.save_all()
+                    await s._refresh_master(q)
+                else:
+                    await q.edit_message_text(f"Мастер {name} уже удалён.")
+                return
+            if data.startswith("edit_master_rename_"):
+                name=data.replace("edit_master_rename_","")
+                c.user_data["rename_old"]=name
+                await q.edit_message_text(f"Введите новое имя для «{name}»:")
+                c.user_data["wait_rename"]=True
+                return
+            if data.startswith("stats_master_"):
+                master=data.replace("stats_master_","")
+                c.user_data["stats_master"]=master
+                await q.edit_message_text(f"Мастер: {master if master!='все' else 'Все'}\nВыберите период:",reply_markup=period_kb("stats_period"))
+                return
+            if data.startswith("stats_period_"):
+                period=data.replace("stats_period_","")
+                if period=="custom":
+                    await q.edit_message_text("Введите даты ГГГГ-ММ-ДД ГГГГ-ММ-ДД:")
+                    c.user_data["wait_custom_dates"]=True
+                    return
+                master=c.user_data.get("stats_master","все")
+                await s._show(u,c,"stats",master=master,period=period,target=q.message)
+                return
+            if data.startswith("rating_period_"):
+                period=data.replace("rating_period_","")
+                if period=="custom":
+                    await q.edit_message_text("Введите даты ГГГГ-ММ-ДД ГГГГ-ММ-ДД:")
+                    c.user_data["wait_rating_dates"]=True
+                    return
+                await s._show(u,c,"rating",period=period,target=q.message)
+                return
+            if data.startswith("master_") or data=="skip_master":
+                if data=="skip_master":
+                    await q.edit_message_text("Доход не записан.")
+                    return
+                master=data[7:]
+                res=c.user_data.get("last_result"); txt=c.user_data.get("last_text","")
+                if not res:
+                    await q.edit_message_text("❌ Ошибка: результат не найден.")
+                    return
+                s.d.i.append({"master":master,"amount":res["net"],"date":datetime.now().isoformat(),"text":txt})
+                s.d.save_all()
+                await q.edit_message_text(f"✅ Доход {res['net']:.2f} руб. для {master} записан.")
+                return
+            # Если ничего не подошло
+            logger.warning(f"Неизвестный callback: {data}")
+        except Exception as e:
+            logger.error(f"Ошибка в callback {data}: {e}")
+            await q.edit_message_text("Произошла ошибка. Попробуйте снова.")
 
     async def _refresh_master(s,q):
-        if not s.d.m: return await q.edit_message_text("Список мастеров пуст.")
+        if not s.d.m:
+            await q.edit_message_text("Список мастеров пуст.")
+            return
         kb=[]
         for m in s.d.m: kb.append([InlineKeyboardButton(m,callback_data="noop"),InlineKeyboardButton("✏️",callback_data=f"edit_master_rename_{m}"),InlineKeyboardButton("❌",callback_data=f"edit_master_delete_{m}")])
         kb.append([InlineKeyboardButton("🔙 Назад",callback_data=BACK)])
@@ -302,23 +329,17 @@ class Bot:
         }
         if text in btn_map: return await btn_map[text](u,c)
 
-        # Обработка состояния "простой расчёт"
+        # Состояния
         if c.user_data.get("wait_calc_only"):
             acc=parse(text)
             if acc==0:
                 await u.message.reply_text("❌ Не найдено чисел.")
             else:
                 res=calc(acc,s.p)
-                await u.message.reply_text(
-                    f"📊 Начислено: {res['accrued']:.2f} руб.\n"
-                    f"Удержание {res['percent']:.1f}%: {res['deductions']:.2f} руб.\n"
-                    f"💵 К выдаче: {res['net']:.2f} руб.\n\n"
-                    "✅ Расчёт выполнен (без сохранения)."
-                )
+                await u.message.reply_text(f"📊 Начислено: {res['accrued']:.2f} руб.\nУдержание {res['percent']:.1f}%: {res['deductions']:.2f} руб.\n💵 К выдаче: {res['net']:.2f} руб.\n\n✅ Расчёт выполнен (без сохранения).")
             c.user_data["wait_calc_only"]=False
             return
 
-        # Остальные ожидания (добавление мастера, переименование, процент, даты)
         if c.user_data.get("wait_master"):
             name=text.strip()
             if name in s.d.m: await u.message.reply_text(f"Мастер {name} уже есть.")
@@ -356,7 +377,7 @@ class Bot:
             else: await u.message.reply_text("Введите две даты через пробел.")
             return
 
-        # Основной расчёт с сохранением (для зарегистрированных или с выбором мастера)
+        # Основной расчёт
         acc=parse(text)
         if acc==0: return await u.message.reply_text("❌ Не найдено чисел. Пример: 'Лексус 1300'")
         res=calc(acc,s.p)
@@ -382,7 +403,9 @@ class Bot:
         c.user_data["wait_calc_only"] = True
 
     # ---------- Запуск ----------
-    def run(s): print("✅ Бот запущен."); s.app.run_polling()
+    def run(s): 
+        logger.info("Бот запущен")
+        s.app.run_polling()
 
 # ---------- Точка входа ----------
 if __name__=="__main__":
