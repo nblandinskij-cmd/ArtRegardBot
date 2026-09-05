@@ -60,21 +60,14 @@ def period_kb(prefix):
 # ---------- Менеджер данных ----------
 class DataManager:
     def __init__(self):
-        # Настройки
         self.settings = self._load(F[0], {"deduction_percent": DEFAULT_PERCENT})
-        # Мастера: теперь список словарей [{"name": "Имя", "branch": "Филиал"}]
         self.masters = self._load(F[1], [])
-        # Конвертация старого формата (список строк)
         if self.masters and isinstance(self.masters[0], str):
             self.masters = [{"name": m, "branch": "Основной"} for m in self.masters]
             self._save(F[1], self.masters)
-        # Доходы
         self.incomes = self._load(F[2], [])
-        # Пользователи
         self.users = self._load(F[3], {})
-        # Филиалы (отдельный список)
         self.branches = self._load(F[4], [])
-        # Если филиалы пусты, но есть мастера с филиалами, заполним
         if not self.branches:
             for m in self.masters:
                 if m["branch"] not in self.branches:
@@ -86,7 +79,6 @@ class DataManager:
             try:
                 with open(file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    # Проверка типа
                     if file == F[1] and not isinstance(data, list):
                         return default
                     if file == F[2] and not isinstance(data, list):
@@ -103,8 +95,7 @@ class DataManager:
         return default
 
     def _save(self, file, data):
-        if file == F[1]:  # masters
-            # Убедимся, что каждый элемент - словарь с name и branch
+        if file == F[1]:
             cleaned = []
             for item in data:
                 if isinstance(item, dict) and "name" in item:
@@ -115,21 +106,21 @@ class DataManager:
                 elif isinstance(item, str):
                     cleaned.append({"name": item.strip(), "branch": "Основной"})
             data = cleaned
-        elif file == F[4]:  # branches
+        elif file == F[4]:
             data = [str(b).strip() for b in data if str(b).strip()]
-        elif file == F[0]:  # settings
+        elif file == F[0]:
             if "deduction_percent" in data:
                 try:
                     data["deduction_percent"] = float(data["deduction_percent"])
                 except:
                     data["deduction_percent"] = DEFAULT_PERCENT
-        elif file == F[3]:  # users
+        elif file == F[3]:
             for uid, name in list(data.items()):
                 if name is None or not str(name).strip():
                     del data[uid]
                 else:
                     data[uid] = str(name).strip()
-        elif file == F[2]:  # incomes
+        elif file == F[2]:
             for inc in data:
                 if "master" in inc:
                     inc["master"] = str(inc["master"]) if inc["master"] else ""
@@ -138,9 +129,7 @@ class DataManager:
                         inc["amount"] = float(inc["amount"])
                     except:
                         inc["amount"] = 0.0
-                # добавим branch, если отсутствует
                 if "branch" not in inc:
-                    # попытаемся найти мастера
                     master_name = inc.get("master")
                     branch = "Основной"
                     for m in self.masters:
@@ -170,7 +159,7 @@ class DataManager:
     def get_all_master_names(self):
         return [m["name"] for m in self.masters]
 
-# ---------- Парсинг чисел ----------
+# ---------- Парсинг ----------
 def parse_numbers(text):
     if not text:
         return 0.0
@@ -207,7 +196,7 @@ def calculate(accrued, percent):
         "percent": percent
     }
 
-# ---------- Фильтр доходов по периоду и филиалу ----------
+# ---------- Фильтр ----------
 def filter_incomes(incomes, master_name=None, branch=None, period=None):
     now = datetime.now()
     start_date = end_date = None
@@ -371,7 +360,7 @@ class SalaryBot:
         else:
             await update.effective_message.reply_text("Вы не зарегистрированы.")
 
-    # ---------- Управление филиалами ----------
+    # ---------- Филиалы ----------
     async def add_branch(self, update, context):
         if context.args:
             name = " ".join(context.args).strip()
@@ -397,7 +386,6 @@ class SalaryBot:
             name = " ".join(context.args).strip()
             if name not in self.data.branches:
                 return await update.effective_message.reply_text(f"Филиал '{name}' не найден.")
-            # Проверяем, есть ли мастера в этом филиале
             masters_in_branch = self.data.get_masters_by_branch(name)
             if masters_in_branch:
                 return await update.effective_message.reply_text(
@@ -410,10 +398,9 @@ class SalaryBot:
         else:
             await update.effective_message.reply_text("Укажите название филиала: /remove_branch Название")
 
-    # ---------- Управление мастерами ----------
+    # ---------- Мастера ----------
     async def add_master(self, update, context):
         if context.args:
-            # Формат: /add_master Имя [Филиал]
             parts = " ".join(context.args).strip().split()
             name = parts[0]
             branch = parts[1] if len(parts) > 1 else None
@@ -424,7 +411,6 @@ class SalaryBot:
             if branch and branch not in self.data.branches:
                 return await update.effective_message.reply_text(f"Филиал '{branch}' не существует. Создайте его через /add_branch.")
             if not branch:
-                # Если филиал не указан, предложим выбрать из списка
                 branch = self.data.branches[0] if self.data.branches else "Основной"
                 if branch not in self.data.branches:
                     self.data.branches.append(branch)
@@ -432,7 +418,6 @@ class SalaryBot:
             self.data.save_all()
             await update.effective_message.reply_text(f"✅ Мастер {name} добавлен в филиал {branch}.")
         else:
-            # Интерактивный режим: запросить имя, затем филиал
             await update.effective_message.reply_text("Введите имя нового мастера:")
             context.user_data["wait_master_name"] = True
 
@@ -444,9 +429,7 @@ class SalaryBot:
             await update.effective_message.reply_text(f"Мастер {name} уже существует.")
             return
         context.user_data["new_master_name"] = name
-        # Предложить выбрать филиал
         if not self.data.branches:
-            # Если филиалов нет, создадим "Основной"
             self.data.branches.append("Основной")
             self.data.save_all()
         keyboard = []
@@ -465,9 +448,7 @@ class SalaryBot:
             return await update.effective_message.reply_text("Укажите имя: /remove_master Иван")
         if name not in self.data.get_all_master_names():
             return await update.effective_message.reply_text(f"Мастер {name} не найден.")
-        # Удаляем мастера из списка
         self.data.masters = [m for m in self.data.masters if m["name"] != name]
-        # Удаляем связанные доходы? Лучше оставить для истории.
         self.data.save_all()
         await update.effective_message.reply_text(f"✅ Мастер {name} удалён.")
 
@@ -546,7 +527,7 @@ class SalaryBot:
             await update.effective_message.reply_text("❌ Введите число.")
         context.user_data["wait_percent"] = False
 
-    # ---------- Дополнительные доходы и расходы ----------
+    # ---------- Доходы/расходы ----------
     async def add_income_command(self, update, context):
         if len(context.args) < 2:
             return await update.effective_message.reply_text("Использование: /add_income <сумма> <описание>\nПример: /add_income 5000 Премия")
@@ -639,7 +620,7 @@ class SalaryBot:
         else:
             await update.effective_message.reply_text("Введите текст с числами: /calc Лексус 1300")
 
-    # ---------- Статистика по филиалам (команда) ----------
+    # ---------- Статистика по филиалам ----------
     async def stats_branch_command(self, update, context):
         if context.args:
             branch = context.args[0]
@@ -648,7 +629,6 @@ class SalaryBot:
                 return await update.effective_message.reply_text(f"Филиал '{branch}' не найден.")
             await self._show_branch_stats(update, context, branch, period)
         else:
-            # Показать выбор филиала
             keyboard = []
             for b in self.data.branches:
                 keyboard.append([InlineKeyboardButton(b, callback_data=f"branch_{b}")])
@@ -660,7 +640,6 @@ class SalaryBot:
             context.user_data["stats_branch_mode"] = True
 
     async def _show_branch_stats(self, update, context, branch, period=None, target=None):
-        # Получаем доходы по филиалу за период
         filtered = filter_incomes(self.data.incomes, branch=branch, period=period)
         if not filtered:
             msg = f"Нет данных по филиалу '{branch}' за выбранный период."
@@ -682,7 +661,6 @@ class SalaryBot:
             "все": "Всю историю"
         }.get(period if isinstance(period, str) else "все", str(period) if period else "весь период")
 
-        # Группировка по мастерам
         masters_stats = defaultdict(float)
         for inc in filtered:
             masters_stats[inc["master"]] += inc["amount"]
@@ -713,7 +691,7 @@ class SalaryBot:
                 ]))
             )
 
-    # ---------- Рейтинг мастеров ----------
+    # ---------- Рейтинг ----------
     async def rating(self, update, context):
         if context.args:
             period = parse_period(" ".join(context.args))
@@ -786,7 +764,7 @@ class SalaryBot:
             if data == "noop":
                 return
 
-            # Обработка подфункций
+            # ---- Обработка действий ----
             if data == "add_master":
                 await self.add_master(update, context)
                 return
@@ -800,10 +778,6 @@ class SalaryBot:
             if data == "add_expense":
                 await query.message.reply_text("Введите сумму и описание через пробел, например:\n1500 Материалы")
                 context.user_data["wait_expense"] = True
-                return
-            if data == "stats":
-                # Ветка старой статистики – перенаправим на stats_branch
-                await self.stats_branch_command(update, context)
                 return
             if data == "stats_branch":
                 await self.stats_branch_command(update, context)
@@ -834,7 +808,7 @@ class SalaryBot:
                 await self.remove_branch(update, context)
                 return
 
-            # Выбор филиала (при добавлении мастера)
+            # ---- Выбор филиала при добавлении мастера ----
             if data.startswith("branch_"):
                 branch = data.replace("branch_", "")
                 if branch in self.data.branches:
@@ -851,12 +825,11 @@ class SalaryBot:
                     await query.edit_message_text("Филиал не найден.")
                 return
 
-            # Выбор филиала для статистики (через callback от stats_branch_command)
+            # ---- Выбор филиала для статистики ----
             if data.startswith("branch_") and context.user_data.get("stats_branch_mode"):
                 branch = data.replace("branch_", "")
                 if branch in self.data.branches:
                     context.user_data["stats_branch"] = branch
-                    # Предложить выбор периода
                     await query.edit_message_text(
                         f"Филиал: {branch}\nВыберите период:",
                         reply_markup=period_kb("stats_branch_period")
@@ -865,7 +838,7 @@ class SalaryBot:
                     await query.edit_message_text("Филиал не найден.")
                 return
 
-            # Выбор периода для статистики по филиалу
+            # ---- Выбор периода для статистики филиала ----
             if data.startswith("stats_branch_period_"):
                 period = data.replace("stats_branch_period_", "")
                 if period == "custom":
@@ -879,22 +852,18 @@ class SalaryBot:
                     await query.edit_message_text("Ошибка: филиал не выбран.")
                 return
 
-            # Детализация по дням для статистики филиала
+            # ---- Детализация по дням ----
             if data.startswith("stats_branch_detail_days_"):
                 parts = data.replace("stats_branch_detail_days_", "").split("_")
                 if len(parts) >= 2:
                     branch = parts[0]
                     period = parts[1] if parts[1] != "None" else None
-                    # Преобразуем период в кортеж дат, если это custom
                     if period == "custom":
-                        # нужно получить даты из контекста
                         period = context.user_data.get("custom_period", None)
-                    # Фильтруем доходы
                     filtered = filter_incomes(self.data.incomes, branch=branch, period=period)
                     if not filtered:
                         await query.edit_message_text("Нет данных для детализации.")
                         return
-                    # Группировка по дням
                     daily = defaultdict(float)
                     for inc in filtered:
                         day = datetime.fromisoformat(inc["date"]).date()
@@ -906,7 +875,7 @@ class SalaryBot:
                     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(add_back([])))
                 return
 
-            # Остальные callback'и (редактирование мастеров, выбор мастера для записи, периоды для рейтинга и т.д.)
+            # ---- Редактирование мастеров ----
             if data.startswith("edit_master_delete_"):
                 name = data.replace("edit_master_delete_", "")
                 if name in self.data.get_all_master_names():
@@ -924,36 +893,7 @@ class SalaryBot:
                 context.user_data["wait_rename"] = True
                 return
 
-            if data.startswith("stats_master_"):
-                master = data.replace("stats_master_", "")
-                context.user_data["stats_master"] = master
-                await query.edit_message_text(
-                    f"Мастер: {master if master != 'все' else 'Все'}\nВыберите период:",
-                    reply_markup=period_kb("stats_period")
-                )
-                return
-
-            if data.startswith("stats_period_"):
-                period = data.replace("stats_period_", "")
-                if period == "custom":
-                    await query.edit_message_text("Введите даты ГГГГ-ММ-ДД ГГГГ-ММ-ДД:")
-                    context.user_data["wait_custom_dates"] = True
-                    return
-                master = context.user_data.get("stats_master", "все")
-                # Если мастер "все" – показываем статистику по филиалу? Нет, это для старого режима.
-                # Перенаправим на stats_branch для унификации
-                await self.stats_branch_command(update, context)
-                return
-
-            if data.startswith("rating_period_"):
-                period = data.replace("rating_period_", "")
-                if period == "custom":
-                    await query.edit_message_text("Введите даты ГГГГ-ММ-ДД ГГГГ-ММ-ДД:")
-                    context.user_data["wait_rating_dates"] = True
-                    return
-                await self._show_rating(update, context, period, target=query.message)
-                return
-
+            # ---- Выбор мастера для записи дохода ----
             if data.startswith("master_") or data == "skip_master":
                 if data == "skip_master":
                     await query.edit_message_text("Доход не записан.")
@@ -964,7 +904,6 @@ class SalaryBot:
                 if not result:
                     await query.edit_message_text("❌ Ошибка: результат не найден.")
                     return
-                # Найдём филиал мастера
                 branch = self.data.get_branch(master)
                 self.data.incomes.append({
                     "master": master,
@@ -977,7 +916,7 @@ class SalaryBot:
                 await query.edit_message_text(f"✅ Доход {result['net']:.2f} руб. для {master} записан (филиал {branch}).")
                 return
 
-            # Процент
+            # ---- Процент ----
             if data.startswith("percent_"):
                 val = data.split("_")[1]
                 if val == "custom":
@@ -989,6 +928,16 @@ class SalaryBot:
                     self.data.settings["deduction_percent"] = p
                     self.data.save_all()
                     await query.edit_message_text(f"✅ Удержание установлено на {p:.1f}%")
+                return
+
+            # ---- Рейтинг: период ----
+            if data.startswith("rating_period_"):
+                period = data.replace("rating_period_", "")
+                if period == "custom":
+                    await query.edit_message_text("Введите даты ГГГГ-ММ-ДД ГГГГ-ММ-ДД:")
+                    context.user_data["wait_rating_dates"] = True
+                    return
+                await self._show_rating(update, context, period, target=query.message)
                 return
 
             logger.warning(f"Неизвестный callback: {data}")
@@ -1013,9 +962,14 @@ class SalaryBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
         await query.edit_message_text("📋 Список мастеров:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # ---------- Обработка сообщений ----------
+    # ---------- Обработка текстовых сообщений ----------
     async def handle_message(self, update, context):
         try:
+            # Логируем входящее сообщение
+            logger.info(f"Получено сообщение: {update.effective_message.text}")
+            # Принудительный ответ для проверки
+            await update.effective_message.reply_text("✅ Сообщение получено! Обрабатываю...")
+
             if not update or not update.effective_message:
                 return
 
@@ -1029,7 +983,7 @@ class SalaryBot:
                 await self.show_submenu(update, context, text)
                 return
 
-            # Ожидания
+            # ------ Ожидания ------
             if context.user_data.get("wait_calc_only"):
                 extra = await self._get_total_extra(context)
                 expenses = await self._get_total_expenses(context)
@@ -1117,16 +1071,13 @@ class SalaryBot:
                     context.user_data.pop("wait_rename", None)
                     context.user_data.pop("rename_old", None)
                     return
-                # Обновляем имя мастера
                 for m in self.data.masters:
                     if m["name"] == old:
                         m["name"] = new
                         break
-                # Обновляем доходы
                 for inc in self.data.incomes:
                     if inc["master"] == old:
                         inc["master"] = new
-                # Обновляем пользователей
                 for uid, m in self.data.users.items():
                     if m == old:
                         self.data.users[uid] = new
@@ -1149,7 +1100,6 @@ class SalaryBot:
                         d2 = datetime.strptime(parts[1], "%Y-%m-%d")
                         period = (d1, d2) if d1 <= d2 else (d2, d1)
                         if context.user_data.get("wait_custom_dates"):
-                            # Для статистики по филиалу
                             branch = context.user_data.get("stats_branch")
                             if branch:
                                 context.user_data["wait_custom_dates"] = False
@@ -1167,7 +1117,7 @@ class SalaryBot:
                     await update.effective_message.reply_text("Введите две даты через пробел.")
                 return
 
-            # Основной расчёт (с учётом филиала мастера)
+            # ------ Основной расчёт ------
             extra = await self._get_total_extra(context)
             expenses = await self._get_total_expenses(context)
             acc = parse_numbers(text) + extra - expenses
@@ -1209,7 +1159,7 @@ class SalaryBot:
 
         except Exception as e:
             logger.error(f"Критическая ошибка в handle_message: {e}", exc_info=True)
-            await update.effective_message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+            await update.effective_message.reply_text(f"❌ Ошибка: {str(e)}")
 
     # ---------- Запуск ----------
     def run(self):
