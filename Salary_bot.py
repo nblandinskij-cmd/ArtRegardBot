@@ -263,7 +263,7 @@ class SalaryBot:
             ("edit_income", self.edit_income),
             ("export", self.export_csv),
             ("percent", self.set_percent),
-            ("stats", self.stats),
+            ("stats", self.stats_branch_command),
             ("rating", self.rating),
             ("register", self.register_user),
             ("unregister", self.unregister_user),
@@ -283,7 +283,7 @@ class SalaryBot:
             self.app.add_handler(CommandHandler(cmd, handler))
 
         self.app.add_handler(MessageHandler(filters.COMMAND, self.unknown_command))
-        self.app.add_handler(CallbackQueryHandler(self.callback, pattern="^(add_master|list_masters|add_income|add_expense|stats|stats_branch|rating|simple_calc|export|percent|help|add_branch|list_branches|remove_branch|back_to_main|master_|skip_master|stats_master_|stats_period_|rating_period_|edit_master_|noop|percent_70|percent_60|percent_50|percent_40|percent_custom|branch_|stats_branch_period_|stats_branch_detail_)"))
+        self.app.add_handler(CallbackQueryHandler(self.callback, pattern="^(add_master|list_masters|add_income|add_expense|stats_branch|rating|simple_calc|export|percent|help|add_branch|list_branches|remove_branch|back_to_main|master_|skip_master|edit_master_|noop|percent_70|percent_60|percent_50|percent_40|percent_custom|branch_|stats_branch_period_|stats_branch_detail_)"))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         self.app.add_error_handler(self.error_handler)
 
@@ -527,7 +527,7 @@ class SalaryBot:
             await update.effective_message.reply_text("❌ Введите число.")
         context.user_data["wait_percent"] = False
 
-    # ---------- Доходы/расходы ----------
+    # ---------- Дополнительные доходы/расходы ----------
     async def add_income_command(self, update, context):
         if len(context.args) < 2:
             return await update.effective_message.reply_text("Использование: /add_income <сумма> <описание>\nПример: /add_income 5000 Премия")
@@ -962,12 +962,10 @@ class SalaryBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
         await query.edit_message_text("📋 Список мастеров:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # ---------- Обработка текстовых сообщений ----------
+    # ---------- Обработка сообщений ----------
     async def handle_message(self, update, context):
         try:
-            # Логируем входящее сообщение
             logger.info(f"Получено сообщение: {update.effective_message.text}")
-            # Принудительный ответ для проверки
             await update.effective_message.reply_text("✅ Сообщение получено! Обрабатываю...")
 
             if not update or not update.effective_message:
@@ -978,7 +976,6 @@ class SalaryBot:
                 await update.effective_message.reply_text("Я не вижу текста.")
                 return
 
-            # Кнопки категорий
             if text in SUBMENUS:
                 await self.show_submenu(update, context, text)
                 return
@@ -1179,3 +1176,4 @@ if __name__ == "__main__":
         exit()
     bot = SalaryBot(token)
     bot.run()
+    
