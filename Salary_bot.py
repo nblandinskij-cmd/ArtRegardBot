@@ -13,9 +13,10 @@ BACK = "back_to_menu"
 
 # ---------- Клавиатуры ----------
 KB = ReplyKeyboardMarkup([
-    ["➕ Добавить мастера", "📋 Список мастеров", "🧮 Простой расчёт"],
-    ["📊 Статистика", "🏆 Рейтинг", "📤 Экспорт CSV"],
-    ["⚙️ Процент удержания", "❓ Помощь"]
+    ["➕ Добавить мастера", "📋 Список мастеров", "➕ Добавить доход"],
+    ["💸 Расходы", "📊 Статистика", "🏆 Рейтинг"],
+    ["🧮 Простой расчёт", "📤 Экспорт CSV", "⚙️ Процент удержания"],
+    ["❓ Помощь"]
 ], resize_keyboard=True)
 
 def add_back(k):
@@ -32,7 +33,7 @@ def period_kb(p):
          InlineKeyboardButton("📅 Произвольный диапазон", callback_data=f"{p}_custom")]
     ]))
 
-# ---------- Менеджер данных с защитой ----------
+# ---------- Менеджер данных ----------
 class DataManager:
     def __init__(self):
         self.settings = self._load(F[0], {"deduction_percent": DEFAULT_PERCENT})
@@ -45,7 +46,6 @@ class DataManager:
             try:
                 with open(file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    # Проверка типа данных
                     if file == F[1] and not isinstance(data, list):
                         return default
                     if file == F[2] and not isinstance(data, list):
@@ -60,22 +60,21 @@ class DataManager:
         return default
 
     def _save(self, file, data):
-        # Очистка данных перед сохранением
-        if file == F[1] and isinstance(data, list):  # masters
+        if file == F[1] and isinstance(data, list):
             data = [str(x) for x in data if x is not None and str(x).strip()]
-        elif file == F[0] and isinstance(data, dict):  # settings
+        elif file == F[0] and isinstance(data, dict):
             if "deduction_percent" in data:
                 try:
                     data["deduction_percent"] = float(data["deduction_percent"])
                 except:
                     data["deduction_percent"] = DEFAULT_PERCENT
-        elif file == F[3] and isinstance(data, dict):  # users
+        elif file == F[3] and isinstance(data, dict):
             for uid, name in list(data.items()):
                 if name is None or not str(name).strip():
                     del data[uid]
                 else:
                     data[uid] = str(name).strip()
-        elif file == F[2] and isinstance(data, list):  # incomes
+        elif file == F[2] and isinstance(data, list):
             for inc in data:
                 if "master" in inc:
                     inc["master"] = str(inc["master"]) if inc["master"] else ""
@@ -93,29 +92,21 @@ class DataManager:
         self._save(F[2], self.incomes)
         self._save(F[3], self.users)
 
-# ---------- Парсинг чисел (улучшенный) ----------
+# ---------- Парсинг чисел ----------
 def parse_numbers(text):
     if not text:
         return 0.0
-    # Убираем пробелы между цифрами
     cleaned = re.sub(r'(?<=\d)\s+(?=\d)', '', text)
-    # Заменяем запятую на точку, если она десятичный разделитель (1-2 цифры после)
-    # Игнорируем запятые, после которых ровно 3 цифры (разделитель тысяч)
     def replace_comma(match):
-        # match.group(0) - запятая, перед ней цифра, после неё цифры
-        # Определяем длину числа после запятой до следующего нецифрового символа
         start = match.start()
         end = match.end()
-        # Ищем, сколько цифр после запятой
         after = re.search(r'\d+', cleaned[end:])
         if after:
             digits_after = after.group()
             if len(digits_after) <= 2:
                 return '.'
         return ','
-    # Ищем запятые между цифрами
     cleaned = re.sub(r'(?<=\d),(?=\d)', replace_comma, cleaned)
-    # Теперь ищем все числа (целые и десятичные)
     return sum(float(n) for n in re.findall(r'-?\d+(?:\.\d+)?', cleaned) if n)
 
 def get_message_text(update):
@@ -213,7 +204,13 @@ class SalaryBot:
             ("rating", self.rating),
             ("register", self.register_user),
             ("unregister", self.unregister_user),
-            ("calc", self.calc_command)
+            ("calc", self.calc_command),
+            ("add_income", self.add_income_command),
+            ("extra", self.show_extra),
+            ("clear_extra", self.clear_extra),
+            ("add_expense", self.add_expense_command),
+            ("expenses", self.show_expenses),
+            ("clear_expenses", self.clear_expenses)
         ]
         for cmd, handler in commands:
             self.app.add_handler(CommandHandler(cmd, handler))
@@ -245,7 +242,13 @@ class SalaryBot:
             "/percent – изменить процент удержания\n"
             "/register <имя> – привязать себя к мастеру\n"
             "/unregister – отвязаться\n"
-            "/calc <текст> – быстрый расчёт без сохранения",
+            "/calc <текст> – быстрый расчёт без сохранения\n"
+            "/add_income <сумма> <описание> – добавить дополнительный доход\n"
+            "/extra – показать добавленные доходы\n"
+            "/clear_extra – очистить добавленные доходы\n"
+            "/add_expense <сумма> <описание> – добавить расход (вычитается из начисления)\n"
+            "/expenses – показать расходы\n"
+            "/clear_expenses – очистить расходы",
             reply_markup=KB
         )
 
@@ -378,13 +381,91 @@ class SalaryBot:
             await update.message.reply_text("❌ Введите число.")
         context.user_data["wait_percent"] = False
 
+    # ---------- Дополнительные доходы ----------
+    async def add_income_command(self, update, context):
+        if len(context.args) < 2:
+            return await update.message.reply_text("Использование: /add_income <сумма> <описание>\nПример: /add_income 5000 Премия")
+        amount_str = context.args[0]
+        description = " ".join(context.args[1:])
+        try:
+            amount = float(amount_str)
+        except ValueError:
+            return await update.message.reply_text("❌ Сумма должна быть числом.")
+        if amount <= 0:
+            return await update.message.reply_text("❌ Сумма должна быть положительной.")
+        if "extra_incomes" not in context.user_data:
+            context.user_data["extra_incomes"] = []
+        context.user_data["extra_incomes"].append({"amount": amount, "description": description})
+        await update.message.reply_text(f"✅ Добавлен дополнительный доход: {amount:.2f} руб. ({description})")
+
+    async def show_extra(self, update, context):
+        extras = context.user_data.get("extra_incomes", [])
+        if not extras:
+            await update.message.reply_text("Нет добавленных доходов.")
+            return
+        total = sum(e["amount"] for e in extras)
+        lines = ["📋 Добавленные доходы:"]
+        for i, e in enumerate(extras, 1):
+            lines.append(f"{i}. {e['amount']:.2f} руб. – {e['description']}")
+        lines.append(f"\n💰 Итого: {total:.2f} руб.")
+        await update.message.reply_text("\n".join(lines))
+
+    async def clear_extra(self, update, context):
+        if "extra_incomes" in context.user_data:
+            del context.user_data["extra_incomes"]
+        await update.message.reply_text("🧹 Все добавленные доходы очищены.")
+
+    # ---------- Расходы ----------
+    async def add_expense_command(self, update, context):
+        if len(context.args) < 2:
+            return await update.message.reply_text("Использование: /add_expense <сумма> <описание>\nПример: /add_expense 1500 Материалы")
+        amount_str = context.args[0]
+        description = " ".join(context.args[1:])
+        try:
+            amount = float(amount_str)
+        except ValueError:
+            return await update.message.reply_text("❌ Сумма должна быть числом.")
+        if amount <= 0:
+            return await update.message.reply_text("❌ Сумма должна быть положительной.")
+        if "expenses" not in context.user_data:
+            context.user_data["expenses"] = []
+        context.user_data["expenses"].append({"amount": amount, "description": description})
+        await update.message.reply_text(f"✅ Добавлен расход: {amount:.2f} руб. ({description})")
+
+    async def show_expenses(self, update, context):
+        expenses = context.user_data.get("expenses", [])
+        if not expenses:
+            await update.message.reply_text("Нет добавленных расходов.")
+            return
+        total = sum(e["amount"] for e in expenses)
+        lines = ["📋 Расходы:"]
+        for i, e in enumerate(expenses, 1):
+            lines.append(f"{i}. {e['amount']:.2f} руб. – {e['description']}")
+        lines.append(f"\n💰 Итого: {total:.2f} руб.")
+        await update.message.reply_text("\n".join(lines))
+
+    async def clear_expenses(self, update, context):
+        if "expenses" in context.user_data:
+            del context.user_data["expenses"]
+        await update.message.reply_text("🧹 Все расходы очищены.")
+
+    async def _get_total_extra(self, context):
+        extras = context.user_data.get("extra_incomes", [])
+        return sum(e["amount"] for e in extras)
+
+    async def _get_total_expenses(self, context):
+        expenses = context.user_data.get("expenses", [])
+        return sum(e["amount"] for e in expenses)
+
     # ---------- Команда /calc ----------
     async def calc_command(self, update, context):
         if context.args:
             text = " ".join(context.args)
-            acc = parse_numbers(text)
-            if acc == 0:
-                return await update.message.reply_text("❌ Не найдено чисел.")
+            extra = await self._get_total_extra(context)
+            expenses = await self._get_total_expenses(context)
+            acc = parse_numbers(text) + extra - expenses
+            if acc <= 0:
+                return await update.message.reply_text("❌ Итоговая сумма <= 0 (нет чисел или расходы превышают доход).")
             result = calculate(acc, self.percent)
             await update.message.reply_text(
                 f"📊 Начислено: {result['accrued']:.2f} руб.\n"
@@ -486,7 +567,6 @@ class SalaryBot:
             await query.answer()
 
             if data == BACK:
-                # Сброс всех состояний
                 context.user_data.clear()
                 await query.message.delete()
                 await query.message.reply_text("Главное меню:", reply_markup=KB)
@@ -595,7 +675,7 @@ class SalaryBot:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=BACK)])
         await query.edit_message_text("📋 Список мастеров:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # ---------- Основной обработчик сообщений ----------
+    # ---------- Обработка сообщений ----------
     async def handle_message(self, update, context):
         try:
             if not update or not update.message:
@@ -607,13 +687,15 @@ class SalaryBot:
                 await update.message.reply_text("Я не вижу текста.")
                 return
 
-            # Обработка кнопок
+            # Кнопки
             button_map = {
                 "➕ Добавить мастера": self.add_master,
                 "📋 Список мастеров": self.list_masters,
-                "🧮 Простой расчёт": self.simple_calc,
+                "➕ Добавить доход": self.add_income_button,
+                "💸 Расходы": self.add_expense_button,
                 "📊 Статистика": self.stats,
                 "🏆 Рейтинг": self.rating,
+                "🧮 Простой расчёт": self.simple_calc,
                 "📤 Экспорт CSV": self.export_csv,
                 "⚙️ Процент удержания": self.set_percent,
                 "❓ Помощь": self.help
@@ -624,9 +706,11 @@ class SalaryBot:
 
             # Ожидания
             if context.user_data.get("wait_calc_only"):
-                acc = parse_numbers(text)
-                if acc == 0:
-                    await update.message.reply_text("❌ Не найдено чисел.")
+                extra = await self._get_total_extra(context)
+                expenses = await self._get_total_expenses(context)
+                acc = parse_numbers(text) + extra - expenses
+                if acc <= 0:
+                    await update.message.reply_text("❌ Итоговая сумма <= 0 (нет чисел или расходы превышают доход).")
                 else:
                     result = calculate(acc, self.percent)
                     await update.message.reply_text(
@@ -635,6 +719,48 @@ class SalaryBot:
                         f"💵 К выдаче: {result['net']:.2f} руб.\n\n✅ Расчёт выполнен (без сохранения)."
                     )
                 context.user_data["wait_calc_only"] = False
+                return
+
+            if context.user_data.get("wait_extra_income"):
+                parts = text.split(maxsplit=1)
+                if len(parts) < 2:
+                    await update.message.reply_text("Введите сумму и описание через пробел, например:\n5000 Премия")
+                    return
+                try:
+                    amount = float(parts[0])
+                except ValueError:
+                    await update.message.reply_text("❌ Сумма должна быть числом.")
+                    return
+                if amount <= 0:
+                    await update.message.reply_text("❌ Сумма должна быть положительной.")
+                    return
+                description = parts[1]
+                if "extra_incomes" not in context.user_data:
+                    context.user_data["extra_incomes"] = []
+                context.user_data["extra_incomes"].append({"amount": amount, "description": description})
+                context.user_data["wait_extra_income"] = False
+                await update.message.reply_text(f"✅ Добавлен дополнительный доход: {amount:.2f} руб. ({description})")
+                return
+
+            if context.user_data.get("wait_expense"):
+                parts = text.split(maxsplit=1)
+                if len(parts) < 2:
+                    await update.message.reply_text("Введите сумму и описание через пробел, например:\n1500 Материалы")
+                    return
+                try:
+                    amount = float(parts[0])
+                except ValueError:
+                    await update.message.reply_text("❌ Сумма должна быть числом.")
+                    return
+                if amount <= 0:
+                    await update.message.reply_text("❌ Сумма должна быть положительной.")
+                    return
+                description = parts[1]
+                if "expenses" not in context.user_data:
+                    context.user_data["expenses"] = []
+                context.user_data["expenses"].append({"amount": amount, "description": description})
+                context.user_data["wait_expense"] = False
+                await update.message.reply_text(f"✅ Добавлен расход: {amount:.2f} руб. ({description})")
                 return
 
             if context.user_data.get("wait_master"):
@@ -659,7 +785,6 @@ class SalaryBot:
                     return
                 if new in self.data.masters and new != old:
                     await update.message.reply_text(f"Мастер {new} уже существует.")
-                    # Сбрасываем состояние, чтобы пользователь мог выйти
                     context.user_data.pop("wait_rename", None)
                     context.user_data.pop("rename_old", None)
                     return
@@ -705,9 +830,11 @@ class SalaryBot:
                 return
 
             # Основной расчёт
-            acc = parse_numbers(text)
-            if acc == 0:
-                await update.message.reply_text("❌ Не найдено чисел. Пример: 'Лексус 1300'")
+            extra = await self._get_total_extra(context)
+            expenses = await self._get_total_expenses(context)
+            acc = parse_numbers(text) + extra - expenses
+            if acc <= 0:
+                await update.message.reply_text("❌ Итоговая сумма <= 0 (нет чисел или расходы превышают доход).")
                 return
 
             result = calculate(acc, self.percent)
@@ -717,7 +844,7 @@ class SalaryBot:
                     "master": master,
                     "amount": result["net"],
                     "date": datetime.now().isoformat(),
-                    "text": text
+                    "text": text + (f" (доп. доходы: {extra:.2f}, расходы: {expenses:.2f})" if extra or expenses else "")
                 })
                 self.data.save_all()
                 await update.message.reply_text(
@@ -727,7 +854,7 @@ class SalaryBot:
                 )
             else:
                 context.user_data["last_result"] = result
-                context.user_data["last_text"] = text
+                context.user_data["last_text"] = text + (f" (доп. доходы: {extra:.2f}, расходы: {expenses:.2f})" if extra or expenses else "")
                 keyboard = []
                 if self.data.masters:
                     row = []
@@ -750,6 +877,15 @@ class SalaryBot:
         except Exception as e:
             logger.error(f"Критическая ошибка в handle_message: {e}", exc_info=True)
             await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+
+    # ---------- Обработчики кнопок ----------
+    async def add_income_button(self, update, context):
+        await update.message.reply_text("Введите сумму и описание через пробел, например:\n5000 Премия")
+        context.user_data["wait_extra_income"] = True
+
+    async def add_expense_button(self, update, context):
+        await update.message.reply_text("Введите сумму и описание через пробел, например:\n1500 Материалы")
+        context.user_data["wait_expense"] = True
 
     async def simple_calc(self, update, context):
         await update.message.reply_text("Введите список работ с числами для расчёта (без сохранения):")
