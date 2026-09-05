@@ -1,522 +1,394 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-import re, json, os, csv, io
-from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import re,json,os,csv,io
+from datetime import datetime,timedelta
+from telegram import Update,InlineKeyboardButton,InlineKeyboardMarkup,ReplyKeyboardMarkup
+from telegram.ext import Application,CommandHandler,MessageHandler,CallbackQueryHandler,filters,ContextTypes
 
 # ---------- Конфигурация ----------
-SETTINGS_FILE, MASTERS_FILE, INCOMES_FILE, USERS_FILE = "bot_settings.json", "masters.json", "incomes.json", "users.json"
-DEFAULT_PERCENT = 70.0
-BACK_CALLBACK = "back_to_menu"
+F=("bot_settings.json","masters.json","incomes.json","users.json")
+D=70.0
+BACK="back_to_menu"
 
-# ---------- Клавиатура ----------
-MAIN_KB = ReplyKeyboardMarkup([
-    ["➕ Добавить мастера", "📋 Список мастеров"],
-    ["📊 Статистика", "🏆 Рейтинг"],
-    ["📤 Экспорт CSV", "⚙️ Процент удержания"],
-    ["❓ Помощь"]
-], resize_keyboard=True)
+# ---------- Клавиатуры ----------
+KB=ReplyKeyboardMarkup([
+    ["➕ Добавить мастера","📋 Список мастеров","🧮 Простой расчёт"],
+    ["📊 Статистика","🏆 Рейтинг","📤 Экспорт CSV"],
+    ["⚙️ Процент удержания","❓ Помощь"]
+],resize_keyboard=True)
 
-def add_back_button(keyboard):
-    """Добавляет кнопку «Назад» в конец инлайн-клавиатуры."""
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=BACK_CALLBACK)])
-    return keyboard
+def add_back(k): k.append([InlineKeyboardButton("🔙 Назад",callback_data=BACK)]); return k
+def period_kb(p):
+    return InlineKeyboardMarkup(add_back([
+        [InlineKeyboardButton("📅 Сегодня",callback_data=f"{p}_сегодня"),InlineKeyboardButton("📅 Неделя",callback_data=f"{p}_неделя")],
+        [InlineKeyboardButton("📅 Месяц",callback_data=f"{p}_месяц"),InlineKeyboardButton("📅 Год",callback_data=f"{p}_год")],
+        [InlineKeyboardButton("📅 Вся история",callback_data=f"{p}_все"),InlineKeyboardButton("📅 Произвольный диапазон",callback_data=f"{p}_custom")]
+    ]))
 
-def build_period_keyboard(prefix):
-    keyboard = [
-        [InlineKeyboardButton("📅 Сегодня", callback_data=f"{prefix}_сегодня"),
-         InlineKeyboardButton("📅 Неделя", callback_data=f"{prefix}_неделя")],
-        [InlineKeyboardButton("📅 Месяц", callback_data=f"{prefix}_месяц"),
-         InlineKeyboardButton("📅 Год", callback_data=f"{prefix}_год")],
-        [InlineKeyboardButton("📅 Вся история", callback_data=f"{prefix}_все")],
-        [InlineKeyboardButton("📅 Произвольный диапазон", callback_data=f"{prefix}_custom")]
-    ]
-    return InlineKeyboardMarkup(add_back_button(keyboard))
+# ---------- Данные ----------
+class D:
+    def __init__(s):
+        s.s=json.load(open(F[0],encoding='utf-8')) if os.path.exists(F[0]) else {"deduction_percent":D}
+        s.m=json.load(open(F[1],encoding='utf-8')) if os.path.exists(F[1]) else []
+        s.i=json.load(open(F[2],encoding='utf-8')) if os.path.exists(F[2]) else []
+        s.u=json.load(open(F[3],encoding='utf-8')) if os.path.exists(F[3]) else {}
+    def _save(s,f,d): json.dump(d,open(f,'w',encoding='utf-8'),indent=2,ensure_ascii=False)
+    def save_all(s): s._save(F[0],s.s); s._save(F[1],s.m); s._save(F[2],s.i); s._save(F[3],s.u)
 
-# ---------- Менеджер данных ----------
-class DataManager:
-    def __init__(self):
-        self.settings = self._load(SETTINGS_FILE, {"deduction_percent": DEFAULT_PERCENT})
-        self.masters = self._load(MASTERS_FILE, [])
-        self.incomes = self._load(INCOMES_FILE, [])
-        self.users = self._load(USERS_FILE, {})
-    @staticmethod
-    def _load(f, d):
-        return json.load(open(f, encoding='utf-8')) if os.path.exists(f) else d
-    def _save(self, f, d):
-        with open(f, 'w', encoding='utf-8') as fp: json.dump(d, fp, indent=2, ensure_ascii=False)
-    def save_settings(self): self._save(SETTINGS_FILE, self.settings)
-    def save_masters(self): self._save(MASTERS_FILE, self.masters)
-    def save_incomes(self): self._save(INCOMES_FILE, self.incomes)
-    def save_users(self): self._save(USERS_FILE, self.users)
-
-# ---------- Парсинг чисел ----------
-def parse_total_from_text(text):
+# ---------- Парсинг ----------
+def parse(text):
     if not text: return 0.0
-    cleaned = re.sub(r'(?<=\d)\s+(?=\d)', '', text)
-    cleaned = re.sub(r'(?<=\d),(?=\d)', '.', cleaned)
-    return sum(float(n) for n in re.findall(r'-?\d+(?:\.\d+)?', cleaned) if n)
+    text=re.sub(r'(?<=\d)\s+(?=\d)','',text); text=re.sub(r'(?<=\d),(?=\d)','.',text)
+    return sum(float(n) for n in re.findall(r'-?\d+(?:\.\d+)?',text) if n)
 
-def get_message_text(update):
-    return update.message.text or update.message.caption or ""
+def get_text(u): return u.message.text or u.message.caption or ""
 
-# ---------- Расчёт зарплаты ----------
-def calculate_salary(accrued, percent):
-    total_accrued = accrued
-    deduction_amount = total_accrued * (percent / 100.0)
-    return {"accrued": accrued, "total_accrued": total_accrued,
-            "deductions": deduction_amount, "net_salary": total_accrued - deduction_amount, "percent": percent}
+# ---------- Расчёт ----------
+def calc(acc,perc):
+    ded=acc*(perc/100)
+    return {"accrued":acc,"deductions":ded,"net":acc-ded,"percent":perc}
 
-# ---------- Фильтрация по периоду ----------
-def filter_incomes(incomes_list, master_name=None, period=None):
-    now = datetime.now()
-    start_date = end_date = None
+# ---------- Фильтр ----------
+def filtr(incomes,name=None,period=None):
+    now=datetime.now(); st=et=None
     if period:
-        if period in ("день","сегодня"):
-            start_date, end_date = datetime(now.year, now.month, now.day), datetime(now.year, now.month, now.day) + timedelta(days=1) - timedelta(seconds=1)
-        elif period == "неделя": start_date = now - timedelta(days=7)
-        elif period == "месяц": start_date = now - timedelta(days=30)
-        elif period == "год": start_date = now - timedelta(days=365)
-        elif isinstance(period, tuple) and len(period)==2:
-            start_date, end_date = period
-    return [inc for inc in incomes_list if (not master_name or inc.get("master")==master_name) and
-            (not start_date or (start_date <= datetime.fromisoformat(inc["date"]) and
-                               (not end_date or datetime.fromisoformat(inc["date"]) <= end_date)))]
+        if period in ("день","сегодня"): st=datetime(now.year,now.month,now.day); et=st+timedelta(days=1)-timedelta(seconds=1)
+        elif period=="неделя": st=now-timedelta(days=7)
+        elif period=="месяц": st=now-timedelta(days=30)
+        elif period=="год": st=now-timedelta(days=365)
+        elif isinstance(period,tuple) and len(period)==2: st,et=period
+    return [inc for inc in incomes if (not name or inc.get("master")==name) and (not st or (st<=datetime.fromisoformat(inc["date"]) and (not et or datetime.fromisoformat(inc["date"])<=et)))]
 
-# ---------- Вспомогательные функции ----------
-def parse_period_arg(arg):
-    if arg in ("день","сегодня","неделя","месяц","год"): return arg
-    parts = arg.split()
-    if len(parts)==2:
+def parse_period(a):
+    if a in ("день","сегодня","неделя","месяц","год","все"): return a
+    p=a.split()
+    if len(p)==2:
         try:
-            d1, d2 = datetime.strptime(parts[0], "%Y-%m-%d"), datetime.strptime(parts[1], "%Y-%m-%d")
-            return (d1, d2) if d1 <= d2 else (d2, d1)
+            d1=datetime.strptime(p[0],"%Y-%m-%d"); d2=datetime.strptime(p[1],"%Y-%m-%d")
+            return (d1,d2) if d1<=d2 else (d2,d1)
         except: pass
     return None
 
-# ---------- Основной класс ----------
-class SalaryBot:
-    def __init__(self, token):
-        self.data = DataManager()
-        self.percent = self.data.settings.get("deduction_percent", DEFAULT_PERCENT)
-        self.app = Application.builder().token(token).build()
-        self._register_handlers()
-
-    def _register_handlers(self):
-        for cmd, handler in [("start", self.start), ("help", self.help), ("add_master", self.add_master),
-                             ("remove_master", self.remove_master), ("masters", self.list_masters),
-                             ("incomes", self.list_incomes), ("edit_income", self.edit_income),
-                             ("export", self.export_csv), ("percent", self.set_percent),
-                             ("stats", self.stats), ("rating", self.rating),
-                             ("register", self.register), ("unregister", self.unregister)]:
-            self.app.add_handler(CommandHandler(cmd, handler))
-        self.app.add_handler(CallbackQueryHandler(self.callback_handler, pattern="^(percent|master_|skip_master|stats_master_|stats_period_|rating_period_|edit_master_|back_to_menu)"))
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+# ---------- Бот ----------
+class Bot:
+    def __init__(s,t):
+        s.d=D(); s.p=s.d.s.get("deduction_percent",D)
+        s.app=Application.builder().token(t).build()
+        for cmd,h in [("start",s.start),("help",s.help),("add_master",s.add),("remove_master",s.rm),("masters",s.list_m),
+                      ("incomes",s.list_i),("edit_income",s.edit),("export",s.export),("percent",s.set_p),
+                      ("stats",s.stats),("rating",s.rating),("register",s.reg),("unregister",s.unreg),
+                      ("calc",s.calc_cmd)]:
+            s.app.add_handler(CommandHandler(cmd,h))
+        s.app.add_handler(CallbackQueryHandler(s.cb,pattern="^(percent|master_|skip_master|stats_master_|stats_period_|rating_period_|edit_master_|back_to_menu)"))
+        s.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, s.msg))
 
     # ---------- Команды ----------
-    async def start(self, update, ctx):
-        await update.message.reply_text("👋 Я считаю зарплату по списку работ.\nОтправь текст с числами, я найду их и посчитаю.", reply_markup=MAIN_KB)
-    async def help(self, update, ctx):
-        await update.message.reply_text(
-            "📖 Справка:\n➕ Добавить мастера\n📋 Список мастеров (редактор)\n📊 Статистика\n🏆 Рейтинг\n📤 Экспорт CSV\n⚙️ Процент удержания\n❓ Помощь\n/register <имя> – привязать себя\n/unregister – отвязать", reply_markup=MAIN_KB)
+    async def start(s,u,c): await u.message.reply_text("👋 Я считаю зарплату по списку работ.\nОтправь текст с числами.",reply_markup=KB)
+    async def help(s,u,c): await u.message.reply_text("📖 Справка: /add_master, /masters (редактор), /stats, /rating, /export, /percent, /register <имя>, /unregister, /calc <текст>",reply_markup=KB)
 
-    # ---------- Регистрация ----------
-    async def register(self, update, ctx):
-        args, uid = ctx.args, update.effective_user.id
-        if not args: return await update.message.reply_text("Укажите имя: /register Иван")
-        name = " ".join(args).strip()
-        if name not in self.data.masters: return await update.message.reply_text(f"Мастер '{name}' не существует.")
-        if any(m==name and int(u)!=uid for u,m in self.data.users.items()):
-            return await update.message.reply_text(f"Имя '{name}' уже занято.")
-        self.data.users[str(uid)] = name; self.data.save_users()
-        await update.message.reply_text(f"✅ Вы зарегистрированы как мастер '{name}'.")
-    async def unregister(self, update, ctx):
-        uid = str(update.effective_user.id)
-        if uid in self.data.users: del self.data.users[uid]; self.data.save_users(); await update.message.reply_text("✅ Вы отвязаны.")
-        else: await update.message.reply_text("Вы не зарегистрированы.")
+    async def reg(s,u,c):
+        if not c.args: return await u.message.reply_text("Укажите имя: /register Иван")
+        name=" ".join(c.args).strip()
+        if name not in s.d.m: return await u.message.reply_text(f"Мастер '{name}' не существует.")
+        if any(m==name and int(uid)!=u.effective_user.id for uid,m in s.d.u.items()): return await u.message.reply_text(f"Имя '{name}' занято.")
+        s.d.u[str(u.effective_user.id)]=name; s.d.save_all(); await u.message.reply_text(f"✅ Вы зарегистрированы как '{name}'.")
+    async def unreg(s,u,c):
+        uid=str(u.effective_user.id)
+        if uid in s.d.u: del s.d.u[uid]; s.d.save_all(); await u.message.reply_text("✅ Отвязаны.")
+        else: await u.message.reply_text("Вы не зарегистрированы.")
 
-    # ---------- Мастера ----------
-    async def add_master(self, update, ctx):
-        if ctx.args:
-            name = " ".join(ctx.args).strip()
-            if name in self.data.masters: return await update.message.reply_text(f"Мастер {name} уже есть.")
-            self.data.masters.append(name); self.data.save_masters(); await update.message.reply_text(f"✅ Мастер {name} добавлен.")
+    async def add(s,u,c):
+        if c.args:
+            name=" ".join(c.args).strip()
+            if name in s.d.m: return await u.message.reply_text(f"Мастер {name} уже есть.")
+            s.d.m.append(name); s.d.save_all(); await u.message.reply_text(f"✅ Мастер {name} добавлен.")
         else:
-            await update.message.reply_text("Введите имя нового мастера:")
-            ctx.user_data["waiting_for_master_name"] = True
-    async def remove_master(self, update, ctx):
-        name = " ".join(ctx.args).strip()
-        if not name: return await update.message.reply_text("Укажите имя: /remove_master Иван")
-        if name not in self.data.masters: return await update.message.reply_text(f"Мастер {name} не найден.")
-        self.data.masters.remove(name); self.data.save_masters(); await update.message.reply_text(f"✅ Мастер {name} удалён.")
+            await u.message.reply_text("Введите имя нового мастера:")
+            c.user_data["wait_master"]=True
+    async def rm(s,u,c):
+        name=" ".join(c.args).strip()
+        if not name: return await u.message.reply_text("Укажите имя: /remove_master Иван")
+        if name not in s.d.m: return await u.message.reply_text(f"Мастер {name} не найден.")
+        s.d.m.remove(name); s.d.save_all(); await u.message.reply_text(f"✅ Мастер {name} удалён.")
 
-    async def list_masters(self, update, ctx):
-        """Редактор мастеров с инлайн-кнопками."""
-        if not self.data.masters:
-            await update.message.reply_text("Список мастеров пуст. Добавьте через «➕ Добавить мастера».")
-            return
-        keyboard = []
-        for m in self.data.masters:
-            keyboard.append([
-                InlineKeyboardButton(m, callback_data="noop"),
-                InlineKeyboardButton("✏️", callback_data=f"edit_master_rename_{m}"),
-                InlineKeyboardButton("❌", callback_data=f"edit_master_delete_{m}")
-            ])
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=BACK_CALLBACK)])
-        await update.message.reply_text("📋 Список мастеров:\n(нажмите ✏️ для переименования, ❌ для удаления)",
-                                        reply_markup=InlineKeyboardMarkup(keyboard))
+    async def list_m(s,u,c):
+        if not s.d.m: return await u.message.reply_text("Список мастеров пуст.")
+        kb=[]
+        for m in s.d.m: kb.append([InlineKeyboardButton(m,callback_data="noop"),InlineKeyboardButton("✏️",callback_data=f"edit_master_rename_{m}"),InlineKeyboardButton("❌",callback_data=f"edit_master_delete_{m}")])
+        kb.append([InlineKeyboardButton("🔙 Назад",callback_data=BACK)])
+        await u.message.reply_text("📋 Список мастеров:",reply_markup=InlineKeyboardMarkup(kb))
 
-    # ---------- Доходы ----------
-    async def list_incomes(self, update, ctx):
-        if not self.data.incomes: return await update.message.reply_text("Нет записей.")
-        lines = ["📋 Доходы (№ : мастер : сумма : дата):"]
-        for i, inc in enumerate(self.data.incomes, 1):
-            lines.append(f"{i}. {inc['master']} – {inc['amount']:.2f} ({inc['date'][:10]})")
-        for chunk in [lines[i:i+20] for i in range(0, len(lines), 20)]:
-            await update.message.reply_text("\n".join(chunk))
-    async def edit_income(self, update, ctx):
-        args = ctx.args
-        if len(args)<2: return await update.message.reply_text("Использование: /edit_income <номер> <сумма>")
+    async def list_i(s,u,c):
+        if not s.d.i: return await u.message.reply_text("Нет записей.")
+        lines=["📋 Доходы:"]
+        for i,inc in enumerate(s.d.i,1): lines.append(f"{i}. {inc['master']} – {inc['amount']:.2f} ({inc['date'][:10]})")
+        for ch in [lines[i:i+20] for i in range(0,len(lines),20)]: await u.message.reply_text("\n".join(ch))
+    async def edit(s,u,c):
+        a=c.args
+        if len(a)<2: return await u.message.reply_text("/edit_income <номер> <сумма>")
         try:
-            idx = int(args[0])-1
-            if idx < 0 or idx >= len(self.data.incomes): return await update.message.reply_text("Некорректный номер.")
-            new_amount = float(args[1])
-            if new_amount < 0: return await update.message.reply_text("Сумма не может быть отрицательной.")
-            self.data.incomes[idx]["amount"] = new_amount; self.data.save_incomes()
-            await update.message.reply_text(f"✅ Доход №{idx+1} обновлён: {new_amount:.2f}")
-        except ValueError: await update.message.reply_text("Ошибка: введите число.")
-    async def export_csv(self, update, ctx):
-        if not self.data.incomes: return await update.message.reply_text("Нет данных.")
-        output = io.StringIO()
-        writer = csv.writer(output, delimiter=';')
-        writer.writerow(["Мастер","Сумма","Дата","Исходный текст"])
-        for inc in self.data.incomes:
-            writer.writerow([inc["master"], inc["amount"], inc["date"], inc.get("text","")])
-        output.seek(0)
-        await update.message.reply_document(document=output.getvalue().encode('utf-8-sig'), filename="incomes.csv", caption="📊 Экспорт доходов")
+            idx=int(a[0])-1
+            if idx<0 or idx>=len(s.d.i): return await u.message.reply_text("Некорректный номер.")
+            new=float(a[1])
+            if new<0: return await u.message.reply_text("Сумма не может быть отрицательной.")
+            s.d.i[idx]["amount"]=new; s.d.save_all(); await u.message.reply_text(f"✅ Доход №{idx+1} обновлён: {new:.2f}")
+        except: await u.message.reply_text("Ошибка ввода.")
+    async def export(s,u,c):
+        if not s.d.i: return await u.message.reply_text("Нет данных.")
+        out=io.StringIO()
+        w=csv.writer(out,delimiter=';')
+        w.writerow(["Мастер","Сумма","Дата","Текст"])
+        for inc in s.d.i: w.writerow([inc["master"],inc["amount"],inc["date"],inc.get("text","")])
+        out.seek(0)
+        await u.message.reply_document(document=out.getvalue().encode('utf-8-sig'),filename="incomes.csv",caption="📊 Экспорт")
 
-    # ---------- Процент ----------
-    async def set_percent(self, update, ctx):
-        await update.message.reply_text("Выберите процент:", reply_markup=InlineKeyboardMarkup(
-            add_back_button([
-                [InlineKeyboardButton("70%", callback_data="percent_70"), InlineKeyboardButton("60%", callback_data="percent_60")],
-                [InlineKeyboardButton("50%", callback_data="percent_50"), InlineKeyboardButton("40%", callback_data="percent_40")],
-                [InlineKeyboardButton("Своё...", callback_data="percent_custom")]
-            ])
-        ))
-    async def _handle_percent_input(self, update, ctx):
+    async def set_p(s,u,c):
+        await u.message.reply_text("Выберите процент:",reply_markup=InlineKeyboardMarkup(add_back([
+            [InlineKeyboardButton("70%",callback_data="percent_70"),InlineKeyboardButton("60%",callback_data="percent_60")],
+            [InlineKeyboardButton("50%",callback_data="percent_50"),InlineKeyboardButton("40%",callback_data="percent_40")],
+            [InlineKeyboardButton("Своё...",callback_data="percent_custom")]
+        ])))
+    async def _p_input(s,u,c):
         try:
-            new_percent = float(update.message.text.strip())
-            if 0 <= new_percent <= 100:
-                self.percent = new_percent
-                self.data.settings["deduction_percent"] = new_percent
-                self.data.save_settings()
-                await update.message.reply_text(f"✅ Удержание установлено на {new_percent:.1f}%")
-            else: await update.message.reply_text("❌ От 0 до 100.")
-        except: await update.message.reply_text("❌ Введите число.")
-        ctx.user_data["waiting_percent"] = False
+            p=float(u.message.text.strip())
+            if 0<=p<=100:
+                s.p=p; s.d.s["deduction_percent"]=p; s.d.save_all(); await u.message.reply_text(f"✅ Удержание {p:.1f}%")
+            else: await u.message.reply_text("❌ От 0 до 100.")
+        except: await u.message.reply_text("❌ Введите число.")
+        c.user_data["wait_percent"]=False
 
-    # ---------- Статистика ----------
-    async def stats(self, update, ctx):
-        if ctx.args:
-            name = ctx.args[0]
-            period = parse_period_arg(" ".join(ctx.args[1:])) if len(ctx.args)>1 else None
-            if name in self.data.masters:
-                return await self._show_stats_or_rating(update, ctx, "stats", master=name, period=period)
-            else:
-                return await self._show_stats_or_rating(update, ctx, "stats", master=None, period=name)
-        keyboard = [[InlineKeyboardButton("📊 Все мастера", callback_data="stats_master_все")]]
-        for m in self.data.masters: keyboard.append([InlineKeyboardButton(m, callback_data=f"stats_master_{m}")])
-        await update.message.reply_text("Выберите мастера:", reply_markup=InlineKeyboardMarkup(add_back_button(keyboard)))
-
-    # ---------- Рейтинг ----------
-    async def rating(self, update, ctx):
-        if ctx.args:
-            period = parse_period_arg(" ".join(ctx.args))
-            if period: return await self._show_stats_or_rating(update, ctx, "rating", period=period)
-        await update.message.reply_text("Выберите период:", reply_markup=build_period_keyboard("rating_period"))
-
-    # ---------- Универсальный вывод статистики/рейтинга ----------
-    async def _show_stats_or_rating(self, update, ctx, mode, master=None, period=None, reply_target=None):
-        if isinstance(period, str) and period in ("день","сегодня","неделя","месяц","год","все"):
-            period_spec = None if period=="все" else period
-        elif isinstance(period, tuple):
-            period_spec = period
+    # ---------- Команда /calc (простой расчёт без сохранения) ----------
+    async def calc_cmd(s,u,c):
+        if c.args:
+            text=" ".join(c.args)
+            acc=parse(text)
+            if acc==0: return await u.message.reply_text("❌ Не найдено чисел.")
+            res=calc(acc,s.p)
+            await u.message.reply_text(f"📊 Начислено: {res['accrued']:.2f} руб.\nУдержание {res['percent']:.1f}%: {res['deductions']:.2f} руб.\n💵 К выдаче: {res['net']:.2f} руб.")
         else:
-            period_spec = None
+            await u.message.reply_text("Введите текст с числами: /calc Лексус 1300")
 
-        filtered = filter_incomes(self.data.incomes, master_name=master if master!="все" else None, period=period_spec)
+    # ---------- Статистика и рейтинг ----------
+    async def stats(s,u,c):
+        if c.args:
+            name=c.args[0]
+            period=parse_period(" ".join(c.args[1:])) if len(c.args)>1 else None
+            if name in s.d.m: return await s._show(u,c,"stats",master=name,period=period)
+            else: return await s._show(u,c,"stats",master=None,period=name)
+        kb=[[InlineKeyboardButton("📊 Все мастера",callback_data="stats_master_все")]]
+        for m in s.d.m: kb.append([InlineKeyboardButton(m,callback_data=f"stats_master_{m}")])
+        await u.message.reply_text("Выберите мастера:",reply_markup=InlineKeyboardMarkup(add_back(kb)))
+
+    async def rating(s,u,c):
+        if c.args:
+            period=parse_period(" ".join(c.args))
+            if period: return await s._show(u,c,"rating",period=period)
+        await u.message.reply_text("Выберите период:",reply_markup=period_kb("rating_period"))
+
+    async def _show(s,u,c,mode,master=None,period=None,target=None):
+        if isinstance(period,str) and period in ("день","сегодня","неделя","месяц","год","все"):
+            period_spec=None if period=="все" else period
+        elif isinstance(period,tuple): period_spec=period
+        else: period_spec=None
+        filtered=filtr(s.d.i,master_name=master if master!="все" else None,period=period_spec)
         if not filtered:
-            msg = "Нет данных за выбранный период."
-            if reply_target: return await reply_target.edit_text(msg, reply_markup=InlineKeyboardMarkup(add_back_button([])))
-            return await update.message.reply_text(msg)
-
-        period_display = {"сегодня":"Сегодня","неделя":"Неделя","месяц":"Месяц","год":"Год","все":"Всю историю"}.get(period if isinstance(period,str) else "все", str(period)) if period else "весь период"
-
-        if mode == "stats":
-            if master and master != "все":
-                total = sum(inc["amount"] for inc in filtered)
-                count = len(filtered)
-                text = f"📊 Статистика мастера *{master}* за {period_display}\n💰 {total:.2f} руб.\n📦 {count} записей"
-                if count: text += f"\n📈 Средний чек: {total/count:.2f} руб."
+            msg="Нет данных."
+            if target: await target.edit_text(msg,reply_markup=InlineKeyboardMarkup(add_back([])))
+            else: await u.message.reply_text(msg)
+            return
+        period_disp={"сегодня":"Сегодня","неделя":"Неделя","месяц":"Месяц","год":"Год","все":"Всю историю"}.get(period if isinstance(period,str) else "все",str(period)) if period else "весь период"
+        if mode=="stats":
+            if master and master!="все":
+                total=sum(inc["amount"] for inc in filtered); cnt=len(filtered)
+                text=f"📊 Статистика мастера *{master}* за {period_disp}\n💰 {total:.2f} руб.\n📦 {cnt} записей"
+                if cnt: text+=f"\n📈 Средний чек: {total/cnt:.2f} руб."
             else:
-                stats = {}
-                for inc in filtered:
-                    stats[inc["master"]] = stats.get(inc["master"], 0) + inc["amount"]
-                total_all = sum(stats.values())
-                text = f"📊 *Общая статистика за {period_display}*\n" + "\n".join(f"• {m}: {s:.2f} руб." for m,s in stats.items())
-                text += f"\n\n🏷 *Итого: {total_all:.2f} руб.*"
-        else:  # rating
-            rating_dict = {}
-            for inc in filtered:
-                rating_dict[inc["master"]] = rating_dict.get(inc["master"], 0) + inc["amount"]
-            sorted_rating = sorted(rating_dict.items(), key=lambda x: x[1], reverse=True)
-            lines = [f"🏆 *Рейтинг мастеров за {period_display}*"]
-            for i, (m, amt) in enumerate(sorted_rating, 1):
-                medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}."
+                st={}
+                for inc in filtered: st[inc["master"]]=st.get(inc["master"],0)+inc["amount"]
+                total_all=sum(st.values())
+                text=f"📊 *Общая статистика за {period_disp}*\n"+"\n".join(f"• {m}: {s:.2f} руб." for m,s in st.items())
+                text+=f"\n\n🏷 *Итого: {total_all:.2f} руб.*"
+        else: # rating
+            rd={}
+            for inc in filtered: rd[inc["master"]]=rd.get(inc["master"],0)+inc["amount"]
+            sorted_rating=sorted(rd.items(),key=lambda x:x[1],reverse=True)
+            lines=[f"🏆 *Рейтинг мастеров за {period_disp}*"]
+            for i,(m,amt) in enumerate(sorted_rating,1):
+                medal="🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}."
                 lines.append(f"{medal} {m} – {amt:.2f} руб.")
-            text = "\n".join(lines)
-
-        if reply_target:
-            await reply_target.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(add_back_button([])))
+            text="\n".join(lines)
+        if target:
+            await target.edit_text(text,parse_mode="Markdown",reply_markup=InlineKeyboardMarkup(add_back([])))
         else:
-            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(add_back_button([])))
+            await u.message.reply_text(text,parse_mode="Markdown",reply_markup=InlineKeyboardMarkup(add_back([])))
 
-    # ---------- Callback-обработчик ----------
-    async def callback_handler(self, update, ctx):
-        query = update.callback_query
-        await query.answer()
-        data = query.data
-
-        # Кнопка "Назад" — возврат в главное меню
-        if data == BACK_CALLBACK:
-            await query.edit_message_text("Главное меню:", reply_markup=MAIN_KB)
+    # ---------- Callback ----------
+    async def cb(s,u,c):
+        q=u.callback_query; await q.answer(); data=q.data
+        if data==BACK:
+            await q.message.delete()
+            await q.message.reply_text("Главное меню:",reply_markup=KB)
             return
-
-        # Процент
         if data.startswith("percent_"):
-            val = data.split("_")[1]
-            if val == "custom":
-                await query.edit_message_text("Введите число от 0 до 100:")
-                ctx.user_data["waiting_percent"] = True
+            val=data.split("_")[1]
+            if val=="custom":
+                await q.edit_message_text("Введите число от 0 до 100:")
+                c.user_data["wait_percent"]=True
             else:
-                p = float(val)
-                self.percent = p
-                self.data.settings["deduction_percent"] = p
-                self.data.save_settings()
-                await query.edit_message_text(f"✅ Удержание установлено на {p:.1f}%")
+                p=float(val); s.p=p; s.d.s["deduction_percent"]=p; s.d.save_all()
+                await q.edit_message_text(f"✅ Удержание {p:.1f}%")
             return
-
-        # Редактор мастеров: удаление
         if data.startswith("edit_master_delete_"):
-            name = data.replace("edit_master_delete_", "")
-            if name in self.data.masters:
-                self.data.masters.remove(name)
-                self.data.save_masters()
-                # Обновляем список
-                await self._refresh_master_list(query)
-            else:
-                await query.edit_message_text(f"Мастер {name} уже удалён.")
+            name=data.replace("edit_master_delete_","")
+            if name in s.d.m: s.d.m.remove(name); s.d.save_all(); await s._refresh_master(q)
+            else: await q.edit_message_text(f"Мастер {name} уже удалён.")
             return
-
-        # Редактор мастеров: переименование
         if data.startswith("edit_master_rename_"):
-            name = data.replace("edit_master_rename_", "")
-            ctx.user_data["rename_old_name"] = name
-            await query.edit_message_text(f"Введите новое имя для мастера «{name}»:")
-            ctx.user_data["waiting_for_rename"] = True
+            name=data.replace("edit_master_rename_","")
+            c.user_data["rename_old"]=name
+            await q.edit_message_text(f"Введите новое имя для «{name}»:")
+            c.user_data["wait_rename"]=True
             return
-
-        # Выбор мастера для статистики
         if data.startswith("stats_master_"):
-            master = data.replace("stats_master_", "")
-            ctx.user_data["stats_master"] = master
-            await query.edit_message_text(f"Мастер: {master if master!='все' else 'Все'}\nВыберите период:", reply_markup=build_period_keyboard("stats_period"))
+            master=data.replace("stats_master_","")
+            c.user_data["stats_master"]=master
+            await q.edit_message_text(f"Мастер: {master if master!='все' else 'Все'}\nВыберите период:",reply_markup=period_kb("stats_period"))
             return
-
-        # Выбор периода для статистики
         if data.startswith("stats_period_"):
-            period = data.replace("stats_period_", "")
-            if period == "custom":
-                await query.edit_message_text("Введите две даты через пробел (ГГГГ-ММ-ДД ГГГГ-ММ-ДД):")
-                ctx.user_data["waiting_custom_dates"] = True
+            period=data.replace("stats_period_","")
+            if period=="custom":
+                await q.edit_message_text("Введите даты ГГГГ-ММ-ДД ГГГГ-ММ-ДД:")
+                c.user_data["wait_custom_dates"]=True
                 return
-            master = ctx.user_data.get("stats_master", "все")
-            await self._show_stats_or_rating(update, ctx, "stats", master=master, period=period, reply_target=query.message)
+            master=c.user_data.get("stats_master","все")
+            await s._show(u,c,"stats",master=master,period=period,target=q.message)
             return
-
-        # Выбор периода для рейтинга
         if data.startswith("rating_period_"):
-            period = data.replace("rating_period_", "")
-            if period == "custom":
-                await query.edit_message_text("Введите две даты через пробел (ГГГГ-ММ-ДД ГГГГ-ММ-ДД):")
-                ctx.user_data["waiting_rating_dates"] = True
+            period=data.replace("rating_period_","")
+            if period=="custom":
+                await q.edit_message_text("Введите даты ГГГГ-ММ-ДД ГГГГ-ММ-ДД:")
+                c.user_data["wait_rating_dates"]=True
                 return
-            await self._show_stats_or_rating(update, ctx, "rating", period=period, reply_target=query.message)
+            await s._show(u,c,"rating",period=period,target=q.message)
             return
+        if data.startswith("master_") or data=="skip_master":
+            if data=="skip_master": return await q.edit_message_text("Доход не записан.")
+            master=data[7:]
+            res=c.user_data.get("last_result"); txt=c.user_data.get("last_text","")
+            if not res: return await q.edit_message_text("❌ Ошибка.")
+            s.d.i.append({"master":master,"amount":res["net"],"date":datetime.now().isoformat(),"text":txt})
+            s.d.save_all()
+            await q.edit_message_text(f"✅ Доход {res['net']:.2f} руб. для {master} записан.")
 
-        # Запись дохода (выбор мастера)
-        if data.startswith("master_") or data == "skip_master":
-            if data == "skip_master":
-                await query.edit_message_text("Доход не записан.")
-                return
-            master_name = data[7:]
-            result = ctx.user_data.get("last_result")
-            text = ctx.user_data.get("last_text", "")
-            if not result:
-                await query.edit_message_text("❌ Ошибка: результат не найден.")
-                return
-            self.data.incomes.append({"master": master_name, "amount": result["net_salary"],
-                                      "date": datetime.now().isoformat(), "text": text})
-            self.data.save_incomes()
-            await query.edit_message_text(f"✅ Доход {result['net_salary']:.2f} руб. записан для мастера {master_name}.")
+    async def _refresh_master(s,q):
+        if not s.d.m: return await q.edit_message_text("Список мастеров пуст.")
+        kb=[]
+        for m in s.d.m: kb.append([InlineKeyboardButton(m,callback_data="noop"),InlineKeyboardButton("✏️",callback_data=f"edit_master_rename_{m}"),InlineKeyboardButton("❌",callback_data=f"edit_master_delete_{m}")])
+        kb.append([InlineKeyboardButton("🔙 Назад",callback_data=BACK)])
+        await q.edit_message_text("📋 Список мастеров:",reply_markup=InlineKeyboardMarkup(kb))
 
-    async def _refresh_master_list(self, query):
-        """Обновляет сообщение со списком мастеров после изменений."""
-        if not self.data.masters:
-            await query.edit_message_text("Список мастеров пуст. Добавьте через «➕ Добавить мастера».")
-            return
-        keyboard = []
-        for m in self.data.masters:
-            keyboard.append([
-                InlineKeyboardButton(m, callback_data="noop"),
-                InlineKeyboardButton("✏️", callback_data=f"edit_master_rename_{m}"),
-                InlineKeyboardButton("❌", callback_data=f"edit_master_delete_{m}")
-            ])
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=BACK_CALLBACK)])
-        await query.edit_message_text("📋 Список мастеров:\n(нажмите ✏️ для переименования, ❌ для удаления)",
-                                      reply_markup=InlineKeyboardMarkup(keyboard))
-
-    # ---------- Обработчик сообщений ----------
-    async def handle_message(self, update, ctx):
-        user_id = update.effective_user.id
-        text = get_message_text(update)
+    # ---------- Сообщения ----------
+    async def msg(s,u,c):
+        uid=u.effective_user.id; text=get_text(u)
         if not text: return
-
         # Кнопки
-        btn_map = {
-            "➕ Добавить мастера": self.add_master,
-            "📋 Список мастеров": self.list_masters,
-            "📊 Статистика": self.stats,
-            "🏆 Рейтинг": self.rating,
-            "📤 Экспорт CSV": self.export_csv,
-            "⚙️ Процент удержания": self.set_percent,
-            "❓ Помощь": self.help
+        btn_map={
+            "➕ Добавить мастера":s.add,
+            "📋 Список мастеров":s.list_m,
+            "🧮 Простой расчёт":s.simple_calc,
+            "📊 Статистика":s.stats,
+            "🏆 Рейтинг":s.rating,
+            "📤 Экспорт CSV":s.export,
+            "⚙️ Процент удержания":s.set_p,
+            "❓ Помощь":s.help
         }
-        if text in btn_map:
-            await btn_map[text](update, ctx)
-            return
+        if text in btn_map: return await btn_map[text](u,c)
 
-        # Ожидание имени мастера (добавление)
-        if ctx.user_data.get("waiting_for_master_name"):
-            name = text.strip()
-            if name in self.data.masters:
-                await update.message.reply_text(f"Мастер {name} уже есть.")
+        # Обработка состояния "простой расчёт"
+        if c.user_data.get("wait_calc_only"):
+            acc=parse(text)
+            if acc==0:
+                await u.message.reply_text("❌ Не найдено чисел.")
             else:
-                self.data.masters.append(name); self.data.save_masters()
-                await update.message.reply_text(f"✅ Мастер {name} добавлен.")
-            ctx.user_data["waiting_for_master_name"] = False
+                res=calc(acc,s.p)
+                await u.message.reply_text(
+                    f"📊 Начислено: {res['accrued']:.2f} руб.\n"
+                    f"Удержание {res['percent']:.1f}%: {res['deductions']:.2f} руб.\n"
+                    f"💵 К выдаче: {res['net']:.2f} руб.\n\n"
+                    "✅ Расчёт выполнен (без сохранения)."
+                )
+            c.user_data["wait_calc_only"]=False
             return
 
-        # Ожидание нового имени для переименования
-        if ctx.user_data.get("waiting_for_rename"):
-            old_name = ctx.user_data.get("rename_old_name")
-            new_name = text.strip()
-            if not new_name:
-                await update.message.reply_text("Имя не может быть пустым.")
-                return
-            if new_name in self.data.masters and new_name != old_name:
-                await update.message.reply_text(f"Мастер {new_name} уже существует.")
-                return
-            # Переименовываем в списке мастеров
-            idx = self.data.masters.index(old_name)
-            self.data.masters[idx] = new_name
-            # Обновляем также доходы и регистрации пользователей
-            for inc in self.data.incomes:
-                if inc["master"] == old_name:
-                    inc["master"] = new_name
-            for uid, m in self.data.users.items():
-                if m == old_name:
-                    self.data.users[uid] = new_name
-            self.data.save_masters(); self.data.save_incomes(); self.data.save_users()
-            ctx.user_data["waiting_for_rename"] = False
-            ctx.user_data["rename_old_name"] = None
-            await update.message.reply_text(f"✅ Мастер переименован: {old_name} → {new_name}")
-            # Покажем обновлённый список
-            await self.list_masters(update, ctx)
-            return
-
-        # Ожидание процента
-        if ctx.user_data.get("waiting_percent"):
-            await self._handle_percent_input(update, ctx)
-            return
-
-        # Ожидание дат для статистики/рейтинга
-        if ctx.user_data.get("waiting_custom_dates") or ctx.user_data.get("waiting_rating_dates"):
-            parts = text.split()
-            if len(parts) == 2:
+        # Остальные ожидания (добавление мастера, переименование, процент, даты)
+        if c.user_data.get("wait_master"):
+            name=text.strip()
+            if name in s.d.m: await u.message.reply_text(f"Мастер {name} уже есть.")
+            else: s.d.m.append(name); s.d.save_all(); await u.message.reply_text(f"✅ Мастер {name} добавлен.")
+            c.user_data["wait_master"]=False; return
+        if c.user_data.get("wait_rename"):
+            old=c.user_data.get("rename_old"); new=text.strip()
+            if not new: return await u.message.reply_text("Имя не может быть пустым.")
+            if new in s.d.m and new!=old: return await u.message.reply_text(f"Мастер {new} уже существует.")
+            idx=s.d.m.index(old); s.d.m[idx]=new
+            for inc in s.d.i:
+                if inc["master"]==old: inc["master"]=new
+            for uid2,m in s.d.u.items():
+                if m==old: s.d.u[uid2]=new
+            s.d.save_all()
+            c.user_data["wait_rename"]=False; c.user_data["rename_old"]=None
+            await u.message.reply_text(f"✅ Переименован: {old} → {new}")
+            await s.list_m(u,c); return
+        if c.user_data.get("wait_percent"): return await s._p_input(u,c)
+        if c.user_data.get("wait_custom_dates") or c.user_data.get("wait_rating_dates"):
+            parts=text.split()
+            if len(parts)==2:
                 try:
-                    d1 = datetime.strptime(parts[0], "%Y-%m-%d")
-                    d2 = datetime.strptime(parts[1], "%Y-%m-%d")
-                    period = (d1, d2) if d1 <= d2 else (d2, d1)
-                    if ctx.user_data.get("waiting_custom_dates"):
-                        master = ctx.user_data.get("stats_master", "все")
-                        ctx.user_data["waiting_custom_dates"] = False
-                        await self._show_stats_or_rating(update, ctx, "stats", master=master, period=period)
+                    d1=datetime.strptime(parts[0],"%Y-%m-%d"); d2=datetime.strptime(parts[1],"%Y-%m-%d")
+                    period=(d1,d2) if d1<=d2 else (d2,d1)
+                    if c.user_data.get("wait_custom_dates"):
+                        master=c.user_data.get("stats_master","все")
+                        c.user_data["wait_custom_dates"]=False
+                        await s._show(u,c,"stats",master=master,period=period)
                     else:
-                        ctx.user_data["waiting_rating_dates"] = False
-                        await self._show_stats_or_rating(update, ctx, "rating", period=period)
+                        c.user_data["wait_rating_dates"]=False
+                        await s._show(u,c,"rating",period=period)
                     return
-                except ValueError: await update.message.reply_text("Ошибка формата. Введите даты как ГГГГ-ММ-ДД ГГГГ-ММ-ДД")
-            else: await update.message.reply_text("Введите две даты через пробел.")
+                except: await u.message.reply_text("Ошибка формата. Введите даты как ГГГГ-ММ-ДД ГГГГ-ММ-ДД")
+            else: await u.message.reply_text("Введите две даты через пробел.")
             return
 
-        # Основной расчёт
-        accrued = parse_total_from_text(text)
-        if accrued == 0:
-            return await update.message.reply_text("❌ Не найдено чисел. Пример: 'Лексус 1300 перевод'")
-
-        result = calculate_salary(accrued, self.percent)
-        master = self.data.users.get(str(user_id))
+        # Основной расчёт с сохранением (для зарегистрированных или с выбором мастера)
+        acc=parse(text)
+        if acc==0: return await u.message.reply_text("❌ Не найдено чисел. Пример: 'Лексус 1300'")
+        res=calc(acc,s.p)
+        master=s.d.u.get(str(uid))
         if master:
-            self.data.incomes.append({"master": master, "amount": result["net_salary"],
-                                      "date": datetime.now().isoformat(), "text": text})
-            self.data.save_incomes()
-            await update.message.reply_text(
-                f"📊 Начислено: {result['accrued']:.2f} руб.\nУдержание {result['percent']:.1f}%: {result['deductions']:.2f} руб.\n"
-                f"💵 К выдаче: {result['net_salary']:.2f} руб.\n\n✅ Доход автоматически записан на мастера {master}.")
+            s.d.i.append({"master":master,"amount":res["net"],"date":datetime.now().isoformat(),"text":text})
+            s.d.save_all()
+            await u.message.reply_text(f"📊 Начислено: {res['accrued']:.2f} руб.\nУдержание {res['percent']:.1f}%: {res['deductions']:.2f} руб.\n💵 К выдаче: {res['net']:.2f} руб.\n\n✅ Доход записан на {master}.")
         else:
-            ctx.user_data["last_result"] = result
-            ctx.user_data["last_text"] = text
-            keyboard = []
-            if self.data.masters:
-                row = []
-                for m in self.data.masters:
-                    row.append(InlineKeyboardButton(m, callback_data=f"master_{m}"))
-                    if len(row) == 2:
-                        keyboard.append(row); row = []
-                if row: keyboard.append(row)
-            keyboard.append([InlineKeyboardButton("❌ Не записывать", callback_data="skip_master")])
-            await update.message.reply_text(
-                f"📊 Начислено: {result['accrued']:.2f} руб.\nУдержание {result['percent']:.1f}%: {result['deductions']:.2f} руб.\n"
-                f"💵 К выдаче: {result['net_salary']:.2f} руб.\n\nВы не зарегистрированы. Хотите записать доход для мастера?",
-                reply_markup=InlineKeyboardMarkup(add_back_button(keyboard)))
+            c.user_data["last_result"]=res; c.user_data["last_text"]=text
+            kb=[]
+            if s.d.m:
+                row=[]
+                for m in s.d.m:
+                    row.append(InlineKeyboardButton(m,callback_data=f"master_{m}"))
+                    if len(row)==2: kb.append(row); row=[]
+                if row: kb.append(row)
+            kb.append([InlineKeyboardButton("❌ Не записывать",callback_data="skip_master")])
+            await u.message.reply_text(f"📊 Начислено: {res['accrued']:.2f} руб.\nУдержание {res['percent']:.1f}%: {res['deductions']:.2f} руб.\n💵 К выдаче: {res['net']:.2f} руб.\n\nВыберите мастера для записи:",reply_markup=InlineKeyboardMarkup(add_back(kb)))
+
+    async def simple_calc(s,u,c):
+        await u.message.reply_text("Введите список работ с числами для расчёта (без сохранения):")
+        c.user_data["wait_calc_only"] = True
 
     # ---------- Запуск ----------
-    def run(self):
-        print("✅ Бот запущен.")
-        self.app.run_polling()
+    def run(s): print("✅ Бот запущен."); s.app.run_polling()
 
 # ---------- Точка входа ----------
-def main():
-    token = os.environ.get("BOT_TOKEN")
-    if not token:
-        try: token = input("Введите токен бота: ").strip()
-        except EOFError: print("Установите переменную BOT_TOKEN"); return
-    if not token: print("Токен не введён."); return
-    SalaryBot(token).run()
-
-if __name__ == "__main__":
-    main()
+if __name__=="__main__":
+    t=os.environ.get("BOT_TOKEN")
+    if not t:
+        try: t=input("Введите токен: ").strip()
+        except EOFError: print("Установите BOT_TOKEN"); exit()
+    if not t: print("Токен не введён."); exit()
+    Bot(t).run()
