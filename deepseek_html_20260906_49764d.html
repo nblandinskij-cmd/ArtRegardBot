@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ArtRegardFinance</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--tg-theme-bg-color, #fff);
+            color: var(--tg-theme-text-color, #000);
+            padding: 16px;
+        }
+        .container { max-width: 480px; margin: 0 auto; }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--tg-theme-text-color, #222);
+        }
+        .header .role {
+            font-size: 12px;
+            background: var(--tg-theme-button-color, #0088cc);
+            color: var(--tg-theme-button-text-color, #fff);
+            padding: 4px 12px;
+            border-radius: 20px;
+        }
+
+        .menu-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .menu-btn {
+            background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+            border: none;
+            border-radius: 14px;
+            padding: 16px 8px;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--tg-theme-text-color, #000);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            cursor: pointer;
+            transition: 0.2s;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+        }
+        .menu-btn:active {
+            transform: scale(0.96);
+            background: var(--tg-theme-button-color, #0088cc);
+            color: var(--tg-theme-button-text-color, #fff);
+        }
+        .menu-btn .icon { font-size: 28px; }
+        .menu-btn .label { font-size: 13px; }
+
+        .card {
+            background: var(--tg-theme-secondary-bg-color, #f8f8f8);
+            border-radius: 16px;
+            padding: 18px;
+            margin-bottom: 16px;
+            display: none;
+        }
+        .card.active { display: block; }
+
+        .card h2 {
+            font-size: 18px;
+            margin-bottom: 12px;
+        }
+        .card label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+        .card input, .card textarea, .card select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--tg-theme-hint-color, #ccc);
+            border-radius: 10px;
+            background: var(--tg-theme-bg-color, #fff);
+            color: var(--tg-theme-text-color, #000);
+            font-size: 15px;
+            margin-bottom: 12px;
+        }
+        .card textarea { min-height: 80px; resize: vertical; }
+        .card button {
+            background: var(--tg-theme-button-color, #0088cc);
+            color: var(--tg-theme-button-text-color, #fff);
+            border: none;
+            border-radius: 10px;
+            padding: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            width: 100%;
+            cursor: pointer;
+            transition: 0.2s;
+            margin-bottom: 8px;
+        }
+        .card button:active { opacity: 0.8; }
+        .card .back-btn {
+            background: var(--tg-theme-secondary-bg-color, #e0e0e0);
+            color: var(--tg-theme-text-color, #000);
+        }
+        .card .danger-btn {
+            background: #ef4444;
+            color: white;
+        }
+        .stats-result {
+            background: var(--tg-theme-bg-color, #fff);
+            border-radius: 10px;
+            padding: 12px;
+            margin-top: 12px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .stats-result .line {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .stats-result .line:last-child { border-bottom: none; }
+        .stats-result .label { color: var(--tg-theme-hint-color, #666); }
+        .stats-result .value { font-weight: 600; }
+
+        .balance-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .balance-item .name { font-weight: 500; }
+        .balance-item .amount { font-weight: 600; }
+        .balance-item .btn-pay {
+            background: var(--tg-theme-button-color, #0088cc);
+            color: var(--tg-theme-button-text-color, #fff);
+            border: none;
+            border-radius: 8px;
+            padding: 4px 12px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .pending-item {
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .pending-item .master { font-weight: 500; }
+        .pending-item .amount { font-weight: 600; }
+        .pending-item .actions {
+            margin-top: 4px;
+            display: flex;
+            gap: 8px;
+        }
+        .pending-item .actions button {
+            padding: 4px 12px;
+            border-radius: 6px;
+            border: none;
+            font-size: 12px;
+            cursor: pointer;
+            width: auto;
+        }
+        .btn-approve { background: #22c55e; color: white; }
+        .btn-reject { background: #ef4444; color: white; }
+        .btn-change { background: #f59e0b; color: white; }
+
+        .loading {
+            text-align: center;
+            padding: 20px 0;
+            color: var(--tg-theme-hint-color, #888);
+        }
+        .spinner {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            border: 3px solid var(--tg-theme-hint-color, #ccc);
+            border-radius: 50%;
+            border-top-color: var(--tg-theme-button-color, #0088cc);
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .hidden { display: none; }
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            z-index: 1000;
+            display: none;
+            max-width: 90%;
+        }
+    </style>
+</head>
+<body>
+<div class="container" id="app">
+    <div class="header">
+        <h1>💰 ArtRegardFinance</h1>
+        <span class="role" id="roleBadge">Загрузка...</span>
+    </div>
+
+    <!-- Главное меню (динамическое) -->
+    <div id="mainMenu" class="menu-grid"></div>
+
+    <!-- Карточки -->
+    <div id="cardAddIncome" class="card">
+        <h2>📝 Запросить подтверждение</h2>
+        <label>Список работ</label>
+        <textarea id="incomeText" placeholder="Лексус 1300 перевод"></textarea>
+        <button id="sendIncome">Отправить на подтверждение</button>
+        <button class="back-btn" data-back="main">Назад</button>
+        <div id="incomeResult" class="stats-result" style="display:none;"></div>
+    </div>
+
+    <div id="cardMyStats" class="card">
+        <h2>📊 Моя статистика</h2>
+        <button id="loadMyStats">Обновить</button>
+        <button class="back-btn" data-back="main">Назад</button>
+        <div id="myStatsResult" class="stats-result" style="display:none;"></div>
+    </div>
+
+    <div id="cardMyBalance" class="card">
+        <h2>💰 Мой баланс</h2>
+        <button id="loadMyBalance">Обновить</button>
+        <button class="back-btn" data-back="main">Назад</button>
+        <div id="myBalanceResult" class="stats-result" style="display:none;"></div>
+    </div>
+
+    <div id="cardMasterList" class="card">
+        <h2>👥 Мастера</h2>
+        <button id="loadMasters">Обновить список</button>
+        <div id="mastersList"></div>
+        <button class="back-btn" data-back="main">Назад</button>
+    </div>
+
+    <div id="cardBranches" class="card">
+        <h2>🏢 Филиалы</h2>
+        <label>Добавить филиал</label>
+        <input type="text" id="newBranchName" placeholder="Название">
+        <button id="addBranchBtn">Добавить</button>
+        <div id="branchesList"></div>
+        <button class="back-btn" data-back="main">Назад</button>
+    </div>
+
+    <div id="cardStats" class="card">
+        <h2>📊 Статистика по филиалам</h2>
+        <label>Филиал</label>
+        <select id="statsBranch"><option value="">Загрузка...</option></select>
+        <label>Период</label>
+        <select id="statsPeriod">
+            <option value="сегодня">Сегодня</option>
+            <option value="неделя">Неделя</option>
+            <option value="месяц">Месяц</option>
+            <option value="год">Год</option>
+            <option value="все" selected>Вся история</option>
+        </select>
+        <button id="showStats">Показать</button>
+        <button class="back-btn" data-back="main">Назад</button>
+        <div id="statsResult" class="stats-result" style="display:none;"></div>
+    </div>
+
+    <div id="cardRating" class="card">
+        <h2>🏆 Рейтинг мастеров</h2>
+        <label>Период</label>
+        <select id="ratingPeriod">
+            <option value="сегодня">Сегодня</option>
+            <option value="неделя">Неделя</option>
+            <option value="месяц">Месяц</option>
+            <option value="год">Год</option>
+            <option value="все" selected>Вся история</option>
+        </select>
+        <button id="showRating">Показать</button>
+        <button class="back-btn" data-back="main">Назад</button>
+        <div id="ratingResult" class="stats-result" style="display:none;"></div>
+    </div>
+
+    <div id="cardPending" class="card">
+        <h2>📋 Заявки на подтверждение</h2>
+        <button id="loadPending">Обновить</button>
+        <div id="pendingList"></div>
+        <button class="back-btn" data-back="main">Назад</button>
+    </div>
+
+    <div id="cardAccounts" class="card">
+        <h2>💰 Счета мастеров</h2>
+        <button id="loadBalances">Обновить балансы</button>
+        <div id="balancesList"></div>
+        <button class="back-btn" data-back="main">Назад</button>
+    </div>
+
+    <div id="cardPayment" class="card">
+        <h2>💸 Выплата мастеру</h2>
+        <div id="paymentInfo"></div>
+        <label>Сумма</label>
+        <input type="number" id="paymentAmount" placeholder="0.00">
+        <label>Комментарий</label>
+        <input type="text" id="paymentComment" placeholder="Необязательно">
+        <button id="confirmPayment">Выплатить</button>
+        <button class="back-btn" data-back="accounts">Назад</button>
+        <div id="paymentResult" class="stats-result" style="display:none;"></div>
+    </div>
+
+    <div id="cardActivate" class="card">
+        <h2>🔑 Активация</h2>
+        <label>Ваше имя мастера</label>
+        <input type="text" id="activateName" placeholder="Введите имя">
+        <button id="activateBtn">Активироваться</button>
+        <button class="back-btn" data-back="main">Назад</button>
+        <div id="activateResult" class="stats-result" style="display:none;"></div>
+    </div>
+
+    <div id="cardSimpleCalc" class="card">
+        <h2>🧮 Простой расчёт</h2>
+        <label>Введите текст с числами</label>
+        <textarea id="calcText" placeholder="Лексус 1300"></textarea>
+        <label>Процент удержания</label>
+        <input type="number" id="calcPercent" value="70" min="0" max="100">
+        <button id="calcBtn">Рассчитать</button>
+        <button class="back-btn" data-back="main">Назад</button>
+        <div id="calcResult" class="stats-result" style="display:none;"></div>
+    </div>
+
+    <!-- Лоадер -->
+    <div id="loading" class="hidden">
+        <div class="spinner"></div>
+        <p>Загрузка...</p>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast"></div>
+</div>
+
+<script>
+    const tg = window.Telegram.WebApp;
+    tg.expand();
+
+    // Состояние
+    let state = {
+        role: null, // 'admin' или 'master' или 'unregistered'
+        masterName: null,
+        selectedMaster: null,
+        selectedAccount: null,
+        pendingData: [],
+        balances: [],
+        branches: [],
+    };
+
+    // Утилиты
+    function showToast(msg) {
+        const t = document.getElementById('toast');
+        t.textContent = msg;
+        t.style.display = 'block';
+        clearTimeout(t._timeout);
+        t._timeout = setTimeout(() => t.style.display = 'none', 3000);
+    }
+
+    function showLoading(show) {
+        document.getElementById('loading').classList.toggle('hidden', !show);
+    }
+
+    function showCard(id) {
+        document.querySelectorAll('.card').forEach(c => c.classList.remove('active'));
+        document.getElementById(id).classList.add('active');
+        document.getElementById('mainMenu').style.display = 'none';
+    }
+
+    function showMainMenu() {
+        document.querySelectorAll('.card').forEach(c => c.classList.remove('active'));
+        document.getElementById('mainMenu').style.display = 'grid';
+    }
+
+    function sendToBot(data) {
+        showLoading(true);
+        tg.sendData(JSON.stringify(data));
+    }
+
+    // Обработка ответов от бота
+    window.handleResponse = function(response) {
+        showLoading(false);
+        console.log('Ответ от бота:', response);
+        const action = response.action;
+
+        if (action === 'role_info') {
+            state.role = response.role;
+            state.masterName = response.masterName || null;
+            document.getElementById('roleBadge').textContent = state.role === 'admin' ? 'Админ' : state.role === 'master' ? 'Мастер' : 'Гость';
+            buildMainMenu();
+            if (state.role === 'unregistered') {
+                showCard('cardActivate');
+            } else {
+                showMainMenu();
+            }
+            return;
+        }
+
+        if (action === 'activate_result') {
+            const resultDiv = document.getElementById('activateResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `<div class="line"><span>${response.message}</span></div>`;
+            if (response.success) {
+                state.role = 'master';
+                state.masterName = response.masterName;
+                document.getElementById('roleBadge').textContent = 'Мастер';
+                buildMainMenu();
+                setTimeout(() => showMainMenu(), 1500);
+            }
+            return;
+        }
+
+        if (action === 'add_income_result') {
+            const resultDiv = document.getElementById('incomeResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `
+                <div class="line"><span class="label">Начислено</span><span class="value">${response.accrued} руб.</span></div>
+                <div class="line"><span class="label">Удержание (${response.percent}%)</span><span class="value">${response.deductions} руб.</span></div>
+                <div class="line"><span class="label">К выдаче</span><span class="value">${response.net} руб.</span></div>
+                <div style="margin-top:8px; color:green;">${response.message || 'Заявка отправлена'}</div>
+            `;
+            return;
+        }
+
+        if (action === 'my_stats_result') {
+            const resultDiv = document.getElementById('myStatsResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `
+                <div class="line"><span class="label">Общая сумма</span><span class="value">${response.total} руб.</span></div>
+                <div class="line"><span class="label">Количество операций</span><span class="value">${response.count}</span></div>
+                <div class="line"><span class="label">Средний чек</span><span class="value">${response.avg} руб.</span></div>
+            `;
+            return;
+        }
+
+        if (action === 'my_balance_result') {
+            const resultDiv = document.getElementById('myBalanceResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `<div class="line"><span class="label">Ваш баланс</span><span class="value">${response.balance} руб.</span></div>`;
+            return;
+        }
+
+        if (action === 'masters_list') {
+            const listDiv = document.getElementById('mastersList');
+            listDiv.innerHTML = '';
+            if (response.masters.length === 0) {
+                listDiv.innerHTML = '<p>Нет мастеров</p>';
+                return;
+            }
+            response.masters.forEach(m => {
+                const div = document.createElement('div');
+                div.className = 'balance-item';
+                div.innerHTML = `
+                    <span class="name">${m.name} (${m.branch})</span>
+                    <button class="btn-pay" data-master="${m.name}">✏️</button>
+                `;
+                listDiv.appendChild(div);
+            });
+            return;
+        }
+
+        if (action === 'branches_result') {
+            state.branches = response.branches;
+            const listDiv = document.getElementById('branchesList');
+            listDiv.innerHTML = '';
+            if (response.branches.length === 0) {
+                listDiv.innerHTML = '<p>Нет филиалов</p>';
+                return;
+            }
+            response.branches.forEach(b => {
+                const div = document.createElement('div');
+                div.className = 'balance-item';
+                div.innerHTML = `<span>• ${b}</span>`;
+                listDiv.appendChild(div);
+            });
+            // Обновить селекты
+            const selects = document.querySelectorAll('select[id$="Branch"]');
+            selects.forEach(sel => {
+                const current = sel.value;
+                sel.innerHTML = '';
+                response.branches.forEach(b => {
+                    const opt = document.createElement('option');
+                    opt.value = b;
+                    opt.textContent = b;
+                    sel.appendChild(opt);
+                });
+                if (current && response.branches.includes(current)) sel.value = current;
+            });
+            return;
+        }
+
+        if (action === 'stats_result') {
+            const resultDiv = document.getElementById('statsResult');
+            resultDiv.style.display = 'block';
+            let html = `
+                <div class="line"><span class="label">Общая сумма</span><span class="value">${response.total} руб.</span></div>
+                <div class="line"><span class="label">Количество операций</span><span class="value">${response.count}</span></div>
+                <div class="line"><span class="label">Средний чек</span><span class="value">${response.avg} руб.</span></div>
+                <div><strong>Топ мастеров:</strong></div>
+                ${response.top.map((m, i) => `<div class="line"><span>${i+1}. ${m.name}</span><span>${m.amount} руб.</span></div>`).join('')}
+            `;
+            resultDiv.innerHTML = html;
+            return;
+        }
+
+        if (action === 'rating_result') {
+            const resultDiv = document.getElementById('ratingResult');
+            resultDiv.style.display = 'block';
+            let html = `<div><strong>Рейтинг:</strong></div>`;
+            response.rating.forEach((m, i) => {
+                const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
+                html += `<div class="line"><span>${medal} ${m.name}</span><span>${m.amount} руб.</span></div>`;
+            });
+            resultDiv.innerHTML = html;
+            return;
+        }
+
+        if (action === 'pending_list') {
+            state.pendingData = response.pending;
+            const listDiv = document.getElementById('pendingList');
+            listDiv.innerHTML = '';
+            if (response.pending.length === 0) {
+                listDiv.innerHTML = '<p>Нет заявок</p>';
+                return;
+            }
+            response.pending.forEach((p, idx) => {
+                const div = document.createElement('div');
+                div.className = 'pending-item';
+                div.innerHTML = `
+                    <div><span class="master">${p.master}</span> — <span class="amount">${p.amount} руб.</span> (ориг. ${p.original_amount})</div>
+                    <div style="font-size:12px; color: #888;">${p.text}</div>
+                    <div class="actions">
+                        <button class="btn-approve" data-idx="${idx}">✅ Подтвердить</button>
+                        <button class="btn-change" data-idx="${idx}">✏️ Изменить</button>
+                        <button class="btn-reject" data-idx="${idx}">❌ Отклонить</button>
+                    </div>
+                `;
+                listDiv.appendChild(div);
+            });
+            // Привязка событий
+            listDiv.querySelectorAll('.btn-approve').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const idx = this.dataset.idx;
+                    sendToBot({ action: 'approve_request', idx: idx });
+                });
+            });
+            listDiv.querySelectorAll('.btn-reject').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const idx = this.dataset.idx;
+                    sendToBot({ action: 'reject_request', idx: idx });
+                });
+            });
+            listDiv.querySelectorAll('.btn-change').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const idx = this.dataset.idx;
+                    const newAmount = prompt('Введите новую сумму:', state.pendingData[idx].amount);
+                    if (newAmount !== null) {
+                        sendToBot({ action: 'change_request', idx: idx, amount: parseFloat(newAmount) });
+                    }
+                });
+            });
+            return;
+        }
+
+        if (action === 'balances_list') {
+            state.balances = response.balances;
+            const listDiv = document.getElementById('balancesList');
+            listDiv.innerHTML = '';
+            if (response.balances.length === 0) {
+                listDiv.innerHTML = '<p>Нет данных</p>';
+                return;
+            }
+            response.balances.forEach(b => {
+                const div = document.createElement('div');
+                div.className = 'balance-item';
+                div.innerHTML = `
+                    <span class="name">${b.master}</span>
+                    <span class="amount">${b.balance} руб.</span>
+                    <button class="btn-pay" data-master="${b.master}">💸</button>
+                `;
+                listDiv.appendChild(div);
+            });
+            // Обработка кнопок выплаты
+            listDiv.querySelectorAll('.btn-pay').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const master = this.dataset.master;
+                    state.selectedAccount = master;
+                    showPaymentCard(master);
+                });
+            });
+            return;
+        }
+
+        if (action === 'payment_result') {
+            const resultDiv = document.getElementById('paymentResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `<div class="line"><span>${response.message}</span></div>`;
+            if (response.success) {
+                // обновить балансы
+                setTimeout(() => loadBalances(), 1000);
+            }
+            return;
+        }
+
+        if (action === 'calc_result') {
+            const resultDiv = document.getElementById('calcResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `
+                <div class="line"><span class="label">Начислено</span><span class="value">${response.accrued} руб.</span></div>
+                <div class="line"><span class="label">Удержание (${response.percent}%)</span><span class="value">${response.deductions} руб.</span></div>
+                <div class="line"><span class="label">К выдаче</span><span class="value">${response.net} руб.</span></div>
+            `;
+            return;
+        }
+
+        // Общие сообщения
+        if (response.message) {
+            showToast(response.message);
+        }
+    };
+
+    // Построение главного меню
+    function buildMainMenu() {
+        const menu = document.getElementById('mainMenu');
+        menu.innerHTML = '';
+        const role = state.role;
+
+        if (role === 'admin') {
+            const items = [
+                { icon: '👥', label: 'Мастера', action: 'masters' },
+                { icon: '🏢', label: 'Филиалы', action: 'branches' },
+                { icon: '📊', label: 'Статистика', action: 'stats' },
+                { icon: '🏆', label: 'Рейтинг', action: 'rating' },
+                { icon: '📋', label: 'Заявки', action: 'pending' },
+                { icon: '💰', label: 'Счета', action: 'accounts' },
+                { icon: '🧮', label: 'Простой расчёт', action: 'simple_calc' },
+                { icon: '⚙️', label: 'Настройки', action: 'settings' },
+            ];
+            items.forEach(item => {
+                const btn = document.createElement('div');
+                btn.className = 'menu-btn';
+                btn.innerHTML = `<span class="icon">${item.icon}</span><span class="label">${item.label}</span>`;
+                btn.dataset.action = item.action;
+                menu.appendChild(btn);
+            });
+        } else if (role === 'master') {
+            const items = [
+                { icon: '📝', label: 'Запросить подтверждение', action: 'add_income' },
+                { icon: '📊', label: 'Моя статистика', action: 'my_stats' },
+                { icon: '💰', label: 'Мой баланс', action: 'my_balance' },
+                { icon: '🧮', label: 'Простой расчёт', action: 'simple_calc' },
+            ];
+            items.forEach(item => {
+                const btn = document.createElement('div');
+                btn.className = 'menu-btn';
+                btn.innerHTML = `<span class="icon">${item.icon}</span><span class="label">${item.label}</span>`;
+                btn.dataset.action = item.action;
+                menu.appendChild(btn);
+            });
+        } else {
+            // незарегистрированный
+            const items = [
+                { icon: '🔑', label: 'Активировать', action: 'activate' },
+                { icon: '🧮', label: 'Простой расчёт', action: 'simple_calc' },
+            ];
+            items.forEach(item => {
+                const btn = document.createElement('div');
+                btn.className = 'menu-btn';
+                btn.innerHTML = `<span class="icon">${item.icon}</span><span class="label">${item.label}</span>`;
+                btn.dataset.action = item.action;
+                menu.appendChild(btn);
+            });
+        }
+
+        // Привязка событий
+        menu.querySelectorAll('.menu-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const action = this.dataset.action;
+                switch(action) {
+                    case 'masters': showCard('cardMasterList'); loadMasters(); break;
+                    case 'branches': showCard('cardBranches'); loadBranches(); break;
+                    case 'stats': showCard('cardStats'); loadBranches(); break;
+                    case 'rating': showCard('cardRating'); break;
+                    case 'pending': showCard('cardPending'); loadPending(); break;
+                    case 'accounts': showCard('cardAccounts'); loadBalances(); break;
+                    case 'add_income': showCard('cardAddIncome'); break;
+                    case 'my_stats': showCard('cardMyStats'); loadMyStats(); break;
+                    case 'my_balance': showCard('cardMyBalance'); loadMyBalance(); break;
+                    case 'simple_calc': showCard('cardSimpleCalc'); break;
+                    case 'activate': showCard('cardActivate'); break;
+                    case 'settings': showToast('Настройки пока не реализованы'); break;
+                    default: showToast('Неизвестное действие');
+                }
+            });
+        });
+    }
+
+    // Загрузка данных
+    function loadMasters() {
+        sendToBot({ action: 'get_masters' });
+    }
+
+    function loadBranches() {
+        sendToBot({ action: 'get_branches' });
+    }
+
+    function loadPending() {
+        sendToBot({ action: 'get_pending' });
+    }
+
+    function loadBalances() {
+        sendToBot({ action: 'get_balances' });
+    }
+
+    function loadMyStats() {
+        sendToBot({ action: 'get_my_stats' });
+    }
+
+    function loadMyBalance() {
+        sendToBot({ action: 'get_my_balance' });
+    }
+
+    function showPaymentCard(master) {
+        document.getElementById('paymentInfo').innerHTML = `<p>Выплата мастеру <strong>${master}</strong></p>`;
+        document.getElementById('paymentAmount').value = '';
+        document.getElementById('paymentComment').value = '';
+        document.getElementById('paymentResult').style.display = 'none';
+        showCard('cardPayment');
+    }
+
+    // Обработчики событий
+    document.addEventListener('DOMContentLoaded', function() {
+        // Запрос роли при старте
+        sendToBot({ action: 'get_role' });
+
+        // Обработка активации
+        document.getElementById('activateBtn').addEventListener('click', function() {
+            const name = document.getElementById('activateName').value.trim();
+            if (!name) {
+                showToast('Введите имя мастера');
+                return;
+            }
+            sendToBot({ action: 'activate', name: name });
+        });
+
+        // Отправка дохода
+        document.getElementById('sendIncome').addEventListener('click', function() {
+            const text = document.getElementById('incomeText').value.trim();
+            if (!text) {
+                showToast('Введите список работ');
+                return;
+            }
+            sendToBot({ action: 'add_income', text: text });
+        });
+
+        // Простой расчёт (локальный)
+        document.getElementById('calcBtn').addEventListener('click', function() {
+            const text = document.getElementById('calcText').value.trim();
+            const percent = parseFloat(document.getElementById('calcPercent').value) || 70;
+            if (!text) {
+                showToast('Введите текст с числами');
+                return;
+            }
+            // Парсинг чисел (упрощённый)
+            const nums = text.match(/-?\d+(?:\.\d+)?/g);
+            if (!nums) {
+                showToast('Не найдено чисел');
+                return;
+            }
+            const total = nums.reduce((s, n) => s + parseFloat(n), 0);
+            const deduction = total * (percent / 100);
+            const net = total - deduction;
+            const resultDiv = document.getElementById('calcResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `
+                <div class="line"><span class="label">Начислено</span><span class="value">${total.toFixed(2)} руб.</span></div>
+                <div class="line"><span class="label">Удержание (${percent}%)</span><span class="value">${deduction.toFixed(2)} руб.</span></div>
+                <div class="line"><span class="label">К выдаче</span><span class="value">${net.toFixed(2)} руб.</span></div>
+            `;
+        });
+
+        // Добавление филиала
+        document.getElementById('addBranchBtn').addEventListener('click', function() {
+            const name = document.getElementById('newBranchName').value.trim();
+            if (!name) {
+                showToast('Введите название филиала');
+                return;
+            }
+            sendToBot({ action: 'add_branch', name: name });
+            document.getElementById('newBranchName').value = '';
+        });
+
+        // Статистика
+        document.getElementById('showStats').addEventListener('click', function() {
+            const branch = document.getElementById('statsBranch').value;
+            const period = document.getElementById('statsPeriod').value;
+            if (!branch) {
+                showToast('Выберите филиал');
+                return;
+            }
+            sendToBot({ action: 'get_stats', branch: branch, period: period });
+        });
+
+        // Рейтинг
+        document.getElementById('showRating').addEventListener('click', function() {
+            const period = document.getElementById('ratingPeriod').value;
+            sendToBot({ action: 'get_rating', period: period });
+        });
+
+        // Кнопки "Назад"
+        document.querySelectorAll('.back-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const target = this.dataset.back;
+                if (target === 'main') {
+                    showMainMenu();
+                } else if (target === 'accounts') {
+                    showCard('cardAccounts');
+                    loadBalances();
+                } else {
+                    showMainMenu();
+                }
+            });
+        });
+
+        // Подтверждение выплаты
+        document.getElementById('confirmPayment').addEventListener('click', function() {
+            const amount = parseFloat(document.getElementById('paymentAmount').value);
+            const comment = document.getElementById('paymentComment').value.trim();
+            if (!amount || amount <= 0) {
+                showToast('Введите положительную сумму');
+                return;
+            }
+            const master = state.selectedAccount;
+            if (!master) {
+                showToast('Мастер не выбран');
+                return;
+            }
+            sendToBot({ action: 'make_payment', master: master, amount: amount, comment: comment });
+        });
+
+        // Обработка сообщений от бота
+        tg.onEvent('message', function(message) {
+            try {
+                const data = JSON.parse(message);
+                if (data && data.action) {
+                    window.handleResponse(data);
+                }
+            } catch (e) {
+                // игнорируем
+            }
+        });
+
+        // Инициализация
+        showLoading(false);
+    });
+</script>
+</body>
+</html>
